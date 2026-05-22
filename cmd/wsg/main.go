@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -75,9 +76,24 @@ func cmdDefault() {
 		} else {
 			cmdPoolList()
 		}
-	} else {
-		cmdList()
+		return
 	}
+	if !isTTY {
+		fatal("No pool. Run: wsg pool <N>")
+	}
+	info("No pool configured for this repo.")
+	fmt.Fprintf(os.Stderr, "Pool size: ")
+	var input string
+	fmt.Scanln(&input)
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	size, err := strconv.Atoi(input)
+	if err != nil || size < 1 {
+		fatal("Invalid pool size: %s", input)
+	}
+	cmdPoolResize([]string{strconv.Itoa(size)})
 }
 
 func fatal(format string, a ...any) {
