@@ -31,7 +31,7 @@ const (
 	viewDispatch
 )
 
-const defaultStatus = "[n]ew  [f]ollow  [s]end  [r]eview  [g]rebase  [d]ismiss  [q]uit"
+const defaultStatus = "[n]ew  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [q]uit"
 
 type tuiWorker struct {
 	name         string
@@ -192,6 +192,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tailOffset = 0
 			m.loadTailLines()
 		}
+	case openPRResultMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("PR: %v", msg.err)
+		} else {
+			m.status = fmt.Sprintf("Opened PR for %s", displayWorker(msg.worker))
+		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -249,6 +255,16 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("Dispatching review for %s...", displayWorker(w.name))
 		return m, m.doReview(w)
+	case "o":
+		w := m.selectedWorker()
+		if w == nil {
+			return m, nil
+		}
+		if w.state.BranchName == nil || *w.state.BranchName == "" {
+			m.status = "No branch - run a dispatch first"
+			return m, nil
+		}
+		return m, m.doOpenPR(w)
 	case "s":
 		w := m.selectedWorker()
 		if w == nil {
@@ -408,6 +424,11 @@ type sendResultMsg struct {
 	err    error
 }
 
+type openPRResultMsg struct {
+	worker string
+	err    error
+}
+
 func (m tuiModel) doRebase(w *tuiWorker) tea.Cmd {
 	name := w.name
 	branch := *w.state.BranchName
@@ -420,6 +441,22 @@ func (m tuiModel) doRebase(w *tuiWorker) tea.Cmd {
 			return rebaseResultMsg{worker: name, err: err}
 		}
 		return rebaseResultMsg{worker: name}
+	}
+}
+
+func (m tuiModel) doOpenPR(w *tuiWorker) tea.Cmd {
+	name := w.name
+	branch := *w.state.BranchName
+	repo := ghRepo(m.repo)
+	return func() tea.Msg {
+		if repo == "" {
+			return openPRResultMsg{worker: name, err: fmt.Errorf("cannot detect GitHub repo")}
+		}
+		_, err := run("", "gh", "-R", repo, "pr", "view", branch, "--web")
+		if err != nil {
+			return openPRResultMsg{worker: name, err: fmt.Errorf("no PR for branch %s", branch)}
+		}
+		return openPRResultMsg{worker: name}
 	}
 }
 
