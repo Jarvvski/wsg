@@ -100,6 +100,10 @@ func startForeground(dir string, logFile string, name string, args ...string) (i
 	return exitCode, nil
 }
 
+func jjConfigGet(dir string, key string) (string, error) {
+	return run(dir, "jj", "config", "get", key)
+}
+
 func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }

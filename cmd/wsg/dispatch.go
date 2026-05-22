@@ -217,6 +217,16 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	repo := ghRepo(r)
 	ticketLower := strings.ToLower(opts.TicketID)
 
+	userEmail, err := jjConfigGet(r.Root, "user.email")
+	if err != nil {
+		fatal("Cannot read jj user.email: %v", err)
+	}
+	userName, err := jjConfigGet(r.Root, "user.name")
+	if err != nil {
+		fatal("Cannot read jj user.name: %v", err)
+	}
+	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
+
 	sf := r.workerStateFile(worker)
 	now := nowUTC()
 	ws := &WorkerState{
@@ -233,11 +243,11 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 CRITICAL RULES:
 - Use jj commands, NEVER git commands.
 - The gh CLI requires: gh -R %s pr create ...
-- Branch naming: adam/%s-<short-description> (lowercase, hyphens, max 4 words from ticket title). Example: adam/amba-42-supplier-contact-sync
+- Branch naming: %s/%s-<short-description> (lowercase, hyphens, max 4 words from ticket title). Example: %s/amba-42-supplier-contact-sync
 - To push your work: jj git push --named <branch>=@
 - You have access to Linear MCP tools for fetching ticket details and updating status.
 - Do NOT ask questions. Make reasonable decisions and proceed.
-- If you encounter ambiguity, document your assumptions in the PR description.`, repo, ticketLower)
+- If you encounter ambiguity, document your assumptions in the PR description.`, repo, branchPrefix, ticketLower, branchPrefix)
 
 	if depCtx != nil && depCtx.Context != "" {
 		systemPrompt += fmt.Sprintf(`
@@ -263,10 +273,10 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
 1. Fetch the ticket: use the Linear MCP get_issue tool with id "%s". Read the full description.
    The "Outcome" section defines your acceptance criteria - verify against it before finishing.
 
-2. Claim the ticket: use the Linear MCP save_issue tool with id "%s" to set state "In Progress" and assignee "adam@ameba.ai".
+2. Claim the ticket: use the Linear MCP save_issue tool with id "%s" to set state "In Progress" and assignee "%s".
 
-3. Derive a branch name from the ticket title in the format: adam/%s-<short-description>
-   Use lowercase, hyphens, max 4 words from the title. Example: adam/amba-42-supplier-contact-sync
+3. Derive a branch name from the ticket title in the format: %s/%s-<short-description>
+   Use lowercase, hyphens, max 4 words from the title. Example: %s/amba-42-supplier-contact-sync
 
 4. Read CLAUDE.md and relevant source files to understand the codebase and conventions.
 
@@ -284,7 +294,7 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
 10. Update Linear:
     - Use the Linear MCP save_issue tool to move %s to "Reviewable" state
     - Use the Linear MCP save_comment tool to add a comment with: what was implemented, the PR URL, and any assumptions made`,
-		opts.TicketID, opts.TicketID, opts.TicketID, ticketLower, opts.TicketID, prCreateCmd, opts.TicketID)
+		opts.TicketID, opts.TicketID, opts.TicketID, userEmail, branchPrefix, ticketLower, branchPrefix, opts.TicketID, prCreateCmd, opts.TicketID)
 
 	claudeArgs := []string{
 		"-p",

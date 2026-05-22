@@ -7,8 +7,8 @@ import (
 )
 
 func TestBaseDir(t *testing.T) {
-	got := baseDir("/Users/jarvis/Code/ameba/mono")
-	want := "/Users/jarvis/Code/ameba/mono-workspaces"
+	got := baseDir("/home/user/projects/myrepo")
+	want := "/home/user/projects/myrepo-workspaces"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -16,7 +16,7 @@ func TestBaseDir(t *testing.T) {
 
 func TestBaseDirEnvAbsolute(t *testing.T) {
 	t.Setenv("JJ_WS_DIR", "/custom/workspaces")
-	got := baseDir("/Users/jarvis/Code/ameba/mono")
+	got := baseDir("/home/user/projects/myrepo")
 	want := "/custom/workspaces"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -25,8 +25,8 @@ func TestBaseDirEnvAbsolute(t *testing.T) {
 
 func TestBaseDirEnvRelative(t *testing.T) {
 	t.Setenv("JJ_WS_DIR", "my-workspaces")
-	got := baseDir("/Users/jarvis/Code/ameba/mono")
-	want := "/Users/jarvis/Code/ameba/mono/my-workspaces"
+	got := baseDir("/home/user/projects/myrepo")
+	want := "/home/user/projects/myrepo/my-workspaces"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
