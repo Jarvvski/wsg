@@ -2,9 +2,34 @@
 
 A workspace manager for [Jujutsu](https://jj-vcs.github.io/jj/) repos. Manages workspaces, a worker pool, and dispatches GitHub issues to Claude Code agents.
 
-## Install
+## Requirements
 
-Requires Go 1.26+.
+| Tool | Purpose | Install |
+|------|---------|---------|
+| [Go](https://go.dev/) 1.26+ | Build wsg | `brew install go` |
+| [jj](https://jj-vcs.github.io/jj/) | Version control (workspaces, branches, push) | `brew install jj` |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Headless agent runtime for workers | `brew install claude-code` |
+| [gh](https://cli.github.com/) | GitHub PR creation from dispatched agents | `brew install gh` |
+
+Optional:
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| [mise](https://mise.jdx.dev/) | Runtime version management | `brew install mise` |
+| [rsync](https://rsync.samba.org/) | Workspace file sync | Usually pre-installed |
+| [kitty](https://sw.kovidgoat.net/kitty/) | Terminal multiplexer for `wsg mount` | `brew install kitty` |
+
+### gh CLI setup
+
+wsg uses `gh` to create pull requests from dispatched agents. Authenticate before first use:
+
+```bash
+gh auth login
+```
+
+wsg always passes `-R owner/repo` to `gh` so it works correctly inside jj workspaces (where gh's auto-detection fails). The repo is resolved from `pool.json` or the `origin` remote.
+
+## Install
 
 ```bash
 make install    # builds and installs to ~/.local/bin/wsg
@@ -113,10 +138,6 @@ Running `wsg` with no arguments in a TTY with an active pool launches a Bubblete
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `JJ_WS_DIR` | Base directory for workspaces | `../<repo-name>-workspaces/` |
-
-## External dependencies
-
-wsg shells out to: `jj`, `claude`, `mise`, `gh`, `rsync`, `tail`.
 
 ## License
 
