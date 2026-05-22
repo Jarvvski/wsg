@@ -95,6 +95,7 @@ func (m *tuiModel) loadWorkers() {
 	}
 	workers := make([]tuiWorker, 0, len(cfg.Workers))
 	for _, name := range cfg.Workers {
+		checkWorkerLiveness(m.repo, name)
 		ws, err := loadWorkerState(m.repo.workerStateFile(name))
 		if err != nil {
 			ws = newIdleWorkerState()
@@ -830,16 +831,19 @@ func (m tuiModel) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
 	}
+	var v tea.View
+	v.AltScreen = true
 	switch m.view {
 	case viewTail:
-		return tea.NewView(m.renderTail())
+		v.SetContent(m.renderTail())
 	case viewInput:
-		return tea.NewView(m.renderInput())
+		v.SetContent(m.renderInput())
 	case viewDispatch:
-		return tea.NewView(m.renderDispatch())
+		v.SetContent(m.renderDispatch())
 	default:
-		return tea.NewView(m.renderList())
+		v.SetContent(m.renderList())
 	}
+	return v
 }
 
 func (m tuiModel) renderList() string {
