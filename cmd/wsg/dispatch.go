@@ -122,18 +122,7 @@ func cmdDispatch(args []string) {
 	}
 
 	if len(tickets) == 1 && !opts.NoOrchestrate {
-		dgFile := dispatchGroupFile(r, tickets[0])
-		if dg := syncExistingGroup(r, dgFile); dg != nil {
-			printGroupStatus(dg)
-			if isGroupTerminal(dg) {
-				done, failed, skipped := countGroupStatuses(dg)
-				info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
-			} else {
-				spawnOrchestrator(r, tickets[0], &opts)
-			}
-			return
-		}
-		spawnOrchestrator(r, tickets[0], &opts)
+		tryOrchestrate(r, tickets[0], &opts)
 		return
 	}
 
@@ -271,9 +260,11 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
 
 	sf := r.workerStateFile(worker)
-	ws := newIdleWorkerState()
-	ws.MarkDispatched(opts.TicketID, logFile, ticketLower)
-	saveWorkerState(sf, ws)
+	h, err := CreateIdleWorker(sf)
+	if err != nil {
+		fatal("Failed to create worker state: %v", err)
+	}
+	h.Dispatch(opts.TicketID, logFile, ticketLower)
 
 	systemPrompt := fmt.Sprintf(`You are an autonomous implementation agent in a jj (Jujutsu VCS) workspace.
 
@@ -348,9 +339,9 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
 
 	fullArgs := append([]string{"claude"}, claudeArgs...)
 	if opts.Foreground {
-		runClaudeFG(wspath, logFile, sf, ws, fullArgs)
+		runClaudeFG(wspath, logFile, h, fullArgs)
 	} else {
-		pid, err := runClaudeBG(wspath, logFile, sf, ws, fullArgs)
+		pid, err := runClaudeBG(wspath, logFile, h, fullArgs)
 		if err != nil {
 			fatal("Failed to start worker: %v", err)
 		}

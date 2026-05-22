@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -93,6 +92,68 @@ func (ws *WorkerState) MarkResumed(logFile string) {
 	ws.Error = nil
 }
 
+// ── WorkerHandle ──────────────────────────────────────────────────
+
+type WorkerHandle struct {
+	path  string
+	state *WorkerState
+}
+
+func OpenWorker(path string) (*WorkerHandle, error) {
+	ws, err := loadWorkerState(path)
+	if err != nil {
+		return nil, err
+	}
+	return &WorkerHandle{path: path, state: ws}, nil
+}
+
+func CreateIdleWorker(path string) (*WorkerHandle, error) {
+	ws := newIdleWorkerState()
+	h := &WorkerHandle{path: path, state: ws}
+	if err := h.save(); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func (h *WorkerHandle) State() *WorkerState {
+	return h.state
+}
+
+func (h *WorkerHandle) Dispatch(ticket, logFile, branchName string) error {
+	h.state.MarkDispatched(ticket, logFile, branchName)
+	return h.save()
+}
+
+func (h *WorkerHandle) Done(exitCode int) error {
+	h.state.MarkDone(exitCode)
+	return h.save()
+}
+
+func (h *WorkerHandle) Failed(exitCode int, errMsg string) error {
+	h.state.MarkFailed(exitCode, errMsg)
+	return h.save()
+}
+
+func (h *WorkerHandle) Resume(logFile string) error {
+	h.state.MarkResumed(logFile)
+	return h.save()
+}
+
+func (h *WorkerHandle) SetPID(pid int) error {
+	h.state.SetPID(pid)
+	return h.save()
+}
+
+func (h *WorkerHandle) Reset() error {
+	h.state.Reset()
+	return h.save()
+}
+
+func (h *WorkerHandle) save() error {
+	return saveWorkerState(h.path, h.state)
+}
+
 func loadPoolConfig(path string) (*PoolConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -144,11 +205,11 @@ func saveWorkerState(path string, ws *WorkerState) error {
 }
 
 func checkWorkerLiveness(r *RepoContext, worker string) {
-	sf := r.workerStateFile(worker)
-	ws, err := loadWorkerState(sf)
+	h, err := OpenWorker(r.workerStateFile(worker))
 	if err != nil {
 		return
 	}
+	ws := h.State()
 	if ws.Status == "busy" && ws.PID != nil {
 		if !processAlive(*ws.PID) {
 			if ws.LogFile != nil {
@@ -158,8 +219,9 @@ func checkWorkerLiveness(r *RepoContext, worker string) {
 						if result.ExitCode != nil {
 							ec = *result.ExitCode
 						}
-						ws.MarkDone(ec)
+						h.Done(ec)
 						resolveWorkerBranch(r, worker, ws)
+						h.save()
 					} else {
 						ec := 1
 						if result.ExitCode != nil {
@@ -169,55 +231,14 @@ func checkWorkerLiveness(r *RepoContext, worker string) {
 						if result.Error != nil {
 							errMsg = *result.Error
 						}
-						ws.MarkFailed(ec, errMsg)
+						h.Failed(ec, errMsg)
 					}
-					saveWorkerState(sf, ws)
 					return
 				}
 			}
-			ws.MarkFailed(1, "Process exited unexpectedly")
-			saveWorkerState(sf, ws)
+			h.Failed(1, "Process exited unexpectedly")
 		}
 	}
-}
-
-type logResult struct {
-	Status   string
-	ExitCode *int
-	Error    *string
-}
-
-func readLogResult(logFile string) *logResult {
-	data, err := os.ReadFile(logFile)
-	if err != nil {
-		return nil
-	}
-	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
-	if len(lines) == 0 {
-		return nil
-	}
-	var ev struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
-	}
-	if err := json.Unmarshal(lines[len(lines)-1], &ev); err != nil {
-		return nil
-	}
-	if ev.Type != "result" {
-		return nil
-	}
-	if ev.Subtype == "success" && !ev.IsError {
-		ec := 0
-		return &logResult{Status: "done", ExitCode: &ec}
-	}
-	ec := 1
-	errMsg := ev.Result
-	if errMsg == "" {
-		errMsg = ev.Subtype
-	}
-	return &logResult{Status: "failed", ExitCode: &ec, Error: &errMsg}
 }
 
 func resolveWorkerBranch(r *RepoContext, worker string, ws *WorkerState) {
@@ -428,8 +449,7 @@ func cmdPoolResize(args []string) {
 				defer wg.Done()
 				copyEnvFile(r.Root, wspath)
 				copySynapseClone(r.Root, wspath)
-				ws := newIdleWorkerState()
-				saveWorkerState(filepath.Join(poolDir, name+".json"), ws)
+				CreateIdleWorker(filepath.Join(poolDir, name+".json"))
 			}(name, wspath)
 			info("  Created %s", name)
 		}
@@ -654,17 +674,16 @@ func cmdPoolReset(args []string) {
 	}
 
 	sf := r.workerStateFile(worker)
-	ws, err := loadWorkerState(sf)
+	h, err := OpenWorker(sf)
 	if err != nil {
 		fatal("Worker %s not found", worker)
 	}
 
-	if ws.PID != nil && processAlive(*ws.PID) {
-		killProcess(*ws.PID)
+	if h.State().PID != nil && processAlive(*h.State().PID) {
+		killProcess(*h.State().PID)
 	}
 
-	ws.Reset()
-	saveWorkerState(sf, ws)
+	h.Reset()
 	info("Reset %s to idle", worker)
 
 	wspath := r.workerDir(worker)

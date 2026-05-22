@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -319,8 +316,10 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		sf := m.repo.workerStateFile(w.name)
-		w.state.Reset()
-		saveWorkerState(sf, w.state)
+		if h, err := OpenWorker(sf); err == nil {
+			h.Reset()
+			w.state = h.State()
+		}
 		w.lastActivity = ""
 		m.status = fmt.Sprintf("Reset %s to idle", displayWorker(w.name))
 		return m, nil
@@ -463,66 +462,17 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 	name := w.name
 	repo := m.repo
 	return func() tea.Msg {
-		sf := repo.workerStateFile(name)
-		ws, err := loadWorkerState(sf)
+		prompt, err := buildWorkerReviewPrompt(repo, name)
 		if err != nil {
 			return reviewResultMsg{worker: name, err: err}
 		}
-
-		if ws.LogFile == nil || *ws.LogFile == "" {
-			return reviewResultMsg{worker: name, err: fmt.Errorf("no log file")}
-		}
-
-		sessionID, err := extractSessionID(*ws.LogFile)
+		_, err = resumeWorker(repo, name, resumeOpts{
+			Prompt: prompt,
+			Budget: "5",
+		})
 		if err != nil {
 			return reviewResultMsg{worker: name, err: err}
 		}
-
-		ghRepoName := ghRepo(repo)
-		if ghRepoName == "" {
-			return reviewResultMsg{worker: name, err: fmt.Errorf("cannot detect GitHub repo")}
-		}
-
-		prJSON, err := run("", "gh", "-R", ghRepoName, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName,mergeable", "--limit", "1")
-		if err != nil {
-			return reviewResultMsg{worker: name, err: err}
-		}
-		if prJSON == "" || prJSON == "[]" {
-			return reviewResultMsg{worker: name, err: fmt.Errorf("no PR for branch %s", *ws.BranchName)}
-		}
-
-		var prs []struct {
-			Number      int    `json:"number"`
-			HeadRefName string `json:"headRefName"`
-			Mergeable   string `json:"mergeable"`
-		}
-		if err := json.Unmarshal([]byte(prJSON), &prs); err != nil || len(prs) == 0 {
-			return reviewResultMsg{worker: name, err: fmt.Errorf("no PR for branch %s", *ws.BranchName)}
-		}
-		pr := prs[0]
-
-		hasConflicts := strings.EqualFold(pr.Mergeable, "CONFLICTING")
-		failingChecks := fetchFailingChecks(ghRepoName, pr.Number)
-		prompt := buildReviewPrompt(ghRepoName, pr.Number, "", pr.HeadRefName, failingChecks, hasConflicts)
-
-		wspath := repo.workerDir(name)
-		poolDir := repo.poolDir()
-		logFile := fmt.Sprintf("%s/%s.log", poolDir, name)
-
-		ws.MarkResumed(logFile)
-		saveWorkerState(sf, ws)
-
-		inv := claudeInvocation{
-			Budget:    "5",
-			SessionID: sessionID,
-			Prompt:    prompt,
-		}
-		fullArgs := append([]string{"claude"}, inv.Args()...)
-		_, err = runClaudeBG(wspath, logFile, sf, ws, fullArgs)
-		if err != nil {
-			return reviewResultMsg{worker: name, err: err}
-		}
-
 		return reviewResultMsg{worker: name}
 	}
 }
@@ -530,40 +480,14 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		sf := repo.workerStateFile(workerName)
-		ws, err := loadWorkerState(sf)
+		_, err := resumeWorker(repo, workerName, resumeOpts{
+			Prompt:       prompt,
+			Budget:       "5",
+			SystemPrompt: sendSystemPrompt(ghRepo(repo)),
+		})
 		if err != nil {
 			return sendResultMsg{worker: workerName, err: err}
 		}
-
-		wspath := repo.workerDir(workerName)
-		poolDir := repo.poolDir()
-		logFile := fmt.Sprintf("%s/%s.log", poolDir, workerName)
-
-		sessionID := ""
-		if ws.LogFile != nil && *ws.LogFile != "" {
-			if sid, err := extractSessionID(*ws.LogFile); err == nil {
-				sessionID = sid
-			}
-		}
-
-		ws.MarkResumed(logFile)
-		saveWorkerState(sf, ws)
-
-		inv := claudeInvocation{
-			Budget:    "5",
-			SessionID: sessionID,
-			Prompt:    prompt,
-		}
-		if sessionID == "" {
-			inv.SystemPrompt = sendSystemPrompt(ghRepo(repo))
-		}
-		fullArgs := append([]string{"claude"}, inv.Args()...)
-		_, err = runClaudeBG(wspath, logFile, sf, ws, fullArgs)
-		if err != nil {
-			return sendResultMsg{worker: workerName, err: err}
-		}
-
 		return sendResultMsg{worker: workerName}
 	}
 }
@@ -612,135 +536,6 @@ func (m *tuiModel) loadTailLines() {
 			return
 		}
 	}
-}
-
-func readLogTail(path string, offset int64) ([]string, int64) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, offset
-	}
-	defer f.Close()
-
-	if offset > 0 {
-		f.Seek(offset, io.SeekStart)
-	}
-
-	var lines []string
-	state := &logState{seen: make(map[string]bool)}
-	reader := bufio.NewReader(f)
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				formatted := formatEventToString(line, state)
-				if formatted != "" {
-					lines = append(lines, formatted)
-				}
-			}
-		}
-		if err != nil {
-			break
-		}
-	}
-
-	newOffset, _ := f.Seek(0, io.SeekCurrent)
-	return lines, newOffset
-}
-
-func formatEventToString(line string, state *logState) string {
-	var ev streamEvent
-	if err := json.Unmarshal([]byte(line), &ev); err != nil {
-		return line
-	}
-
-	switch ev.Type {
-	case "system":
-		if ev.Subtype == "init" {
-			return "--- session started ---"
-		}
-	case "assistant":
-		if ev.Message == nil {
-			return ""
-		}
-		var parts []string
-		for _, c := range ev.Message.Content {
-			switch c.Type {
-			case "text":
-				if c.Text != "" && !state.seen[c.Text] {
-					state.seen[c.Text] = true
-					parts = append(parts, c.Text)
-				}
-			case "tool_use":
-				input := summarizeInput(c.Input)
-				parts = append(parts, c.Name+input)
-			}
-		}
-		return strings.Join(parts, " ")
-	case "result":
-		dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
-		cost := fmt.Sprintf("$%.2f", ev.TotalCost)
-		status := "done"
-		if ev.IsError {
-			status = "error"
-		}
-		return fmt.Sprintf("--- %s in %s, %d turns, %s", status, dur, ev.NumTurns, cost)
-	}
-	return ""
-}
-
-func readLastActivity(logFile string) string {
-	f, err := os.Open(logFile)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil || fi.Size() == 0 {
-		return ""
-	}
-
-	// Read last 64KB - result events can be large (contain full output text)
-	readSize := int64(65536)
-	if fi.Size() < readSize {
-		readSize = fi.Size()
-	}
-	f.Seek(-readSize, io.SeekEnd)
-
-	data := make([]byte, readSize)
-	n, _ := f.Read(data)
-	data = data[:n]
-
-	// Find last complete line with a tool_use
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		var ev streamEvent
-		if err := json.Unmarshal([]byte(lines[i]), &ev); err != nil {
-			continue
-		}
-		if ev.Type == "result" {
-			dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
-			cost := fmt.Sprintf("$%.2f", ev.TotalCost)
-			if ev.IsError {
-				return fmt.Sprintf("error %s %s", dur, cost)
-			}
-			return fmt.Sprintf("done %s %s", dur, cost)
-		}
-		if ev.Type == "assistant" && ev.Message != nil {
-			for _, c := range ev.Message.Content {
-				if c.Type == "tool_use" {
-					input := summarizeInputPlain(c.Input)
-					result := c.Name + input
-					if len(result) > 50 {
-						result = result[:47] + "..."
-					}
-					return result
-				}
-			}
-		}
-	}
-	return ""
 }
 
 // ── View ───────────────────────────────────────────────────────────

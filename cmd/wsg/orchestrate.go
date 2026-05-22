@@ -118,11 +118,11 @@ func syncGroupFromWorkers(r *RepoContext, dg *DispatchGroup) bool {
 		}
 		worker := *si.Worker
 		checkWorkerLiveness(r, worker)
-		sf := r.workerStateFile(worker)
-		ws, err := loadWorkerState(sf)
+		h, err := OpenWorker(r.workerStateFile(worker))
 		if err != nil {
 			continue
 		}
+		ws := h.State()
 		switch ws.Status {
 		case "done":
 			si.Status = "done"
@@ -157,13 +157,13 @@ func syncGroupFromWorkers(r *RepoContext, dg *DispatchGroup) bool {
 }
 
 func resetWorkerForReuse(r *RepoContext, worker string) {
-	sf := r.workerStateFile(worker)
-	ws, err := loadWorkerState(sf)
+	h, err := OpenWorker(r.workerStateFile(worker))
 	if err != nil {
-		ws = newIdleWorkerState()
+		h, _ = CreateIdleWorker(r.workerStateFile(worker))
+	} else {
+		h.Reset()
 	}
-	ws.Reset()
-	saveWorkerState(sf, ws)
+	_ = h
 	wspath := r.workerDir(worker)
 	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 		startBackground(wspath, os.DevNull, "sh", "-c", "jj restore 2>/dev/null; jj new main 2>/dev/null")
@@ -599,6 +599,23 @@ func ptrOr(p *string, fallback string) string {
 		return *p
 	}
 	return fallback
+}
+
+// ── Orchestration entry point ─────────────────────────────────────
+
+func tryOrchestrate(r *RepoContext, ticket string, opts *DispatchOpts) {
+	dgFile := dispatchGroupFile(r, ticket)
+	if dg := syncExistingGroup(r, dgFile); dg != nil {
+		printGroupStatus(dg)
+		if isGroupTerminal(dg) {
+			done, failed, skipped := countGroupStatuses(dg)
+			info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
+		} else {
+			spawnOrchestrator(r, ticket, opts)
+		}
+		return
+	}
+	spawnOrchestrator(r, ticket, opts)
 }
 
 // ── Background orchestration ───────────────────────────────────────

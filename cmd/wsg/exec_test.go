@@ -13,21 +13,19 @@ func TestRunClaudeFGSuccess(t *testing.T) {
 	os.MkdirAll(poolDir, 0755)
 
 	sf := filepath.Join(poolDir, "worker-1.json")
-	ws := newIdleWorkerState()
-	ws.MarkDispatched("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
-	saveWorkerState(sf, ws)
+	h, _ := CreateIdleWorker(sf)
+	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
 
 	logFile := filepath.Join(dir, "test.log")
-	runClaudeFG(dir, logFile, sf, ws, []string{"true"})
+	runClaudeFG(dir, logFile, h, []string{"true"})
 
-	loaded, _ := loadWorkerState(sf)
-	if loaded.Status != "done" {
-		t.Errorf("status = %q, want done", loaded.Status)
+	if h.State().Status != "done" {
+		t.Errorf("status = %q, want done", h.State().Status)
 	}
-	if loaded.ExitCode == nil || *loaded.ExitCode != 0 {
-		t.Errorf("exitCode = %v, want 0", loaded.ExitCode)
+	if h.State().ExitCode == nil || *h.State().ExitCode != 0 {
+		t.Errorf("exitCode = %v, want 0", h.State().ExitCode)
 	}
-	if loaded.CompletedAt == nil {
+	if h.State().CompletedAt == nil {
 		t.Error("completedAt should be set")
 	}
 }
@@ -38,19 +36,17 @@ func TestRunClaudeFGFailure(t *testing.T) {
 	os.MkdirAll(poolDir, 0755)
 
 	sf := filepath.Join(poolDir, "worker-1.json")
-	ws := newIdleWorkerState()
-	ws.MarkDispatched("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
-	saveWorkerState(sf, ws)
+	h, _ := CreateIdleWorker(sf)
+	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
 
 	logFile := filepath.Join(dir, "test.log")
-	runClaudeFG(dir, logFile, sf, ws, []string{"false"})
+	runClaudeFG(dir, logFile, h, []string{"false"})
 
-	loaded, _ := loadWorkerState(sf)
-	if loaded.Status != "failed" {
-		t.Errorf("status = %q, want failed", loaded.Status)
+	if h.State().Status != "failed" {
+		t.Errorf("status = %q, want failed", h.State().Status)
 	}
-	if loaded.ExitCode == nil || *loaded.ExitCode != 1 {
-		t.Errorf("exitCode = %v, want 1", loaded.ExitCode)
+	if h.State().ExitCode == nil || *h.State().ExitCode != 1 {
+		t.Errorf("exitCode = %v, want 1", h.State().ExitCode)
 	}
 }
 
@@ -60,12 +56,11 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 	os.MkdirAll(poolDir, 0755)
 
 	sf := filepath.Join(poolDir, "worker-1.json")
-	ws := newIdleWorkerState()
-	ws.MarkDispatched("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
-	saveWorkerState(sf, ws)
+	h, _ := CreateIdleWorker(sf)
+	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
 
 	logFile := filepath.Join(dir, "test.log")
-	pid, err := runClaudeBG(dir, logFile, sf, ws, []string{"true"})
+	pid, err := runClaudeBG(dir, logFile, h, []string{"true"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -100,38 +100,35 @@ func startForeground(dir string, logFile string, name string, args ...string) (i
 	return exitCode, nil
 }
 
-func runClaudeFG(wspath, logFile, sf string, ws *WorkerState, claudeArgs []string) {
+func runClaudeFG(wspath, logFile string, h *WorkerHandle, claudeArgs []string) {
 	exitCode, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
 	if err != nil {
-		ws.MarkFailed(1, err.Error())
+		h.Failed(1, err.Error())
 	} else if exitCode == 0 {
-		ws.MarkDone(exitCode)
+		h.Done(exitCode)
 	} else {
-		ws.MarkFailed(exitCode, "")
+		h.Failed(exitCode, "")
 	}
-	saveWorkerState(sf, ws)
 }
 
-func runClaudeBG(wspath, logFile, sf string, ws *WorkerState, claudeArgs []string) (int, error) {
+func runClaudeBG(wspath, logFile string, h *WorkerHandle, claudeArgs []string) (int, error) {
 	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
 	if err != nil {
-		ws.MarkFailed(1, err.Error())
-		saveWorkerState(sf, ws)
+		h.Failed(1, err.Error())
 		return 0, err
 	}
-	ws.SetPID(pid)
-	saveWorkerState(sf, ws)
+	h.SetPID(pid)
 
+	path := h.path
 	go func() {
 		waitForProcess(pid)
-		ws, err := loadWorkerState(sf)
+		h, err := OpenWorker(path)
 		if err != nil {
 			return
 		}
-		if ws.Status == "busy" {
-			ws.MarkDone(0)
+		if h.State().Status == "busy" {
+			h.Done(0)
 		}
-		saveWorkerState(sf, ws)
 	}()
 
 	return pid, nil

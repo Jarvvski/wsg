@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,8 +12,9 @@ import (
 )
 
 type streamEvent struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	SessionID string `json:"session_id"`
 
 	// assistant message
 	Message *streamMessage `json:"message"`
@@ -25,6 +27,7 @@ type streamEvent struct {
 	NumTurns    int     `json:"num_turns"`
 	TotalCost   float64 `json:"total_cost_usd"`
 	IsError     bool    `json:"is_error"`
+	Result      string  `json:"result"`
 	StopReason  string  `json:"stop_reason"`
 }
 
@@ -285,6 +288,190 @@ func summarizeInput(input any) string {
 			short = short[:77] + "..."
 		}
 		return " " + colorize(short, colorDim)
+	}
+	return ""
+}
+
+// ── Log file queries ──────────────────────────────────────────────
+
+type logResult struct {
+	Status   string
+	ExitCode *int
+	Error    *string
+}
+
+func readLogResult(logFile string) *logResult {
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		return nil
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	if len(lines) == 0 {
+		return nil
+	}
+	var ev streamEvent
+	if err := json.Unmarshal(lines[len(lines)-1], &ev); err != nil {
+		return nil
+	}
+	if ev.Type != "result" {
+		return nil
+	}
+	if ev.Subtype == "success" && !ev.IsError {
+		ec := 0
+		return &logResult{Status: "done", ExitCode: &ec}
+	}
+	ec := 1
+	errMsg := ev.Result
+	if errMsg == "" {
+		errMsg = ev.Subtype
+	}
+	return &logResult{Status: "failed", ExitCode: &ec, Error: &errMsg}
+}
+
+func readLastActivity(logFile string) string {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return ""
+	}
+
+	readSize := int64(65536)
+	if fi.Size() < readSize {
+		readSize = fi.Size()
+	}
+	f.Seek(-readSize, io.SeekEnd)
+
+	data := make([]byte, readSize)
+	n, _ := f.Read(data)
+	data = data[:n]
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var ev streamEvent
+		if err := json.Unmarshal([]byte(lines[i]), &ev); err != nil {
+			continue
+		}
+		if ev.Type == "result" {
+			dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
+			cost := fmt.Sprintf("$%.2f", ev.TotalCost)
+			if ev.IsError {
+				return fmt.Sprintf("error %s %s", dur, cost)
+			}
+			return fmt.Sprintf("done %s %s", dur, cost)
+		}
+		if ev.Type == "assistant" && ev.Message != nil {
+			for _, c := range ev.Message.Content {
+				if c.Type == "tool_use" {
+					input := summarizeInputPlain(c.Input)
+					result := c.Name + input
+					if len(result) > 50 {
+						result = result[:47] + "..."
+					}
+					return result
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func extractSessionID(logFile string) (string, error) {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		var ev streamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			continue
+		}
+		if ev.Type == "system" && ev.Subtype == "init" && ev.SessionID != "" {
+			return ev.SessionID, nil
+		}
+	}
+	return "", fmt.Errorf("no session ID found in log")
+}
+
+func readLogTail(path string, offset int64) ([]string, int64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, offset
+	}
+	defer f.Close()
+
+	if offset > 0 {
+		f.Seek(offset, io.SeekStart)
+	}
+
+	var lines []string
+	state := &logState{seen: make(map[string]bool)}
+	reader := bufio.NewReader(f)
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				formatted := formatEventToString(line, state)
+				if formatted != "" {
+					lines = append(lines, formatted)
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	newOffset, _ := f.Seek(0, io.SeekCurrent)
+	return lines, newOffset
+}
+
+func formatEventToString(line string, state *logState) string {
+	var ev streamEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return line
+	}
+
+	switch ev.Type {
+	case "system":
+		if ev.Subtype == "init" {
+			return "--- session started ---"
+		}
+	case "assistant":
+		if ev.Message == nil {
+			return ""
+		}
+		var parts []string
+		for _, c := range ev.Message.Content {
+			switch c.Type {
+			case "text":
+				if c.Text != "" && !state.seen[c.Text] {
+					state.seen[c.Text] = true
+					parts = append(parts, c.Text)
+				}
+			case "tool_use":
+				input := summarizeInput(c.Input)
+				parts = append(parts, c.Name+input)
+			}
+		}
+		return strings.Join(parts, " ")
+	case "result":
+		dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
+		cost := fmt.Sprintf("$%.2f", ev.TotalCost)
+		status := "done"
+		if ev.IsError {
+			status = "error"
+		}
+		return fmt.Sprintf("--- %s in %s, %d turns, %s", status, dur, ev.NumTurns, cost)
 	}
 	return ""
 }

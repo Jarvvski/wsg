@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,30 +8,51 @@ import (
 	"strings"
 )
 
-func extractSessionID(logFile string) (string, error) {
-	f, err := os.Open(logFile)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
+type resumeOpts struct {
+	Prompt       string
+	Budget       string
+	SystemPrompt string
+	Foreground   bool
+}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		var ev struct {
-			Type      string `json:"type"`
-			Subtype   string `json:"subtype"`
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
-		}
-		if ev.Type == "system" && ev.Subtype == "init" && ev.SessionID != "" {
-			return ev.SessionID, nil
+func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
+	sf := r.workerStateFile(worker)
+	h, err := OpenWorker(sf)
+	if err != nil {
+		return 0, fmt.Errorf("worker %s not found", displayWorker(worker))
+	}
+
+	if h.State().Status == "busy" {
+		return 0, fmt.Errorf("worker %s is busy", displayWorker(worker))
+	}
+
+	wspath := r.workerDir(worker)
+	logFile := filepath.Join(r.poolDir(), worker+".log")
+
+	sessionID := ""
+	if h.State().LogFile != nil && *h.State().LogFile != "" {
+		if sid, err := extractSessionID(*h.State().LogFile); err == nil {
+			sessionID = sid
 		}
 	}
-	return "", fmt.Errorf("no session ID found in log")
+
+	h.Resume(logFile)
+
+	inv := claudeInvocation{
+		Budget:    opts.Budget,
+		SessionID: sessionID,
+		Prompt:    opts.Prompt,
+	}
+	if sessionID == "" && opts.SystemPrompt != "" {
+		inv.SystemPrompt = opts.SystemPrompt
+	}
+
+	fullArgs := append([]string{"claude"}, inv.Args()...)
+	if opts.Foreground {
+		runClaudeFG(wspath, logFile, h, fullArgs)
+		return 0, nil
+	}
+	return runClaudeBG(wspath, logFile, h, fullArgs)
 }
 
 func cmdSend(args []string) {
@@ -78,49 +98,18 @@ func cmdSend(args []string) {
 	fg := resolveForeground(r, fgFlag)
 
 	worker = resolveWorker(worker)
-	sf := r.workerStateFile(worker)
-	ws, err := loadWorkerState(sf)
+	info("Sending to %s...", displayWorker(worker))
+
+	pid, err := resumeWorker(r, worker, resumeOpts{
+		Prompt:       prompt,
+		Budget:       budget,
+		SystemPrompt: sendSystemPrompt(ghRepo(r)),
+		Foreground:   fg,
+	})
 	if err != nil {
-		fatal("Worker %s not found", displayWorker(worker))
+		fatal("%v", err)
 	}
-
-	if ws.Status == "busy" {
-		fatal("Worker %s is busy. Use 'wsg logs %s' to watch progress.", displayWorker(worker), displayWorker(worker))
-	}
-
-	wspath := r.workerDir(worker)
-	poolDir := r.poolDir()
-	logFile := filepath.Join(poolDir, worker+".log")
-
-	sessionID := ""
-	if ws.LogFile != nil && *ws.LogFile != "" {
-		if sid, err := extractSessionID(*ws.LogFile); err == nil {
-			sessionID = sid
-		}
-	}
-
-	ws.MarkResumed(logFile)
-	saveWorkerState(sf, ws)
-
-	inv := claudeInvocation{
-		Budget:    budget,
-		SessionID: sessionID,
-		Prompt:    prompt,
-	}
-	if sessionID != "" {
-		info("Sending to %s (session %s)...", worker, sessionID[:8])
-	} else {
-		inv.SystemPrompt = sendSystemPrompt(ghRepo(r))
-		info("Starting fresh session for %s...", worker)
-	}
-	fullArgs := append([]string{"claude"}, inv.Args()...)
-	if fg {
-		runClaudeFG(wspath, logFile, sf, ws, fullArgs)
-	} else {
-		pid, err := runClaudeBG(wspath, logFile, sf, ws, fullArgs)
-		if err != nil {
-			fatal("Failed to start: %v", err)
-		}
+	if !fg {
 		info("  %s (PID %d) -> %s", worker, pid, prompt[:min(len(prompt), 60)])
 	}
 }
@@ -166,45 +155,52 @@ func cmdReview(args []string) {
 	fg := resolveForeground(r, fgFlag)
 
 	worker = resolveWorker(worker)
-	sf := r.workerStateFile(worker)
-	ws, err := loadWorkerState(sf)
+
+	prompt, err := buildWorkerReviewPrompt(r, worker)
 	if err != nil {
-		fatal("Worker %s not found", displayWorker(worker))
+		fatal("%v", err)
 	}
 
-	if ws.Status == "busy" {
-		fatal("Worker %s is busy. Use 'wsg logs %s' to watch progress.", displayWorker(worker), displayWorker(worker))
+	pid, err := resumeWorker(r, worker, resumeOpts{
+		Prompt:     prompt,
+		Budget:     budget,
+		Foreground: fg,
+	})
+	if err != nil {
+		fatal("%v", err)
 	}
+	if !fg {
+		info("  %s (PID %d) -> review", worker, pid)
+	}
+}
+
+func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
+	h, err := OpenWorker(r.workerStateFile(worker))
+	if err != nil {
+		return "", fmt.Errorf("worker %s not found", displayWorker(worker))
+	}
+	ws := h.State()
 
 	if ws.BranchName == nil || *ws.BranchName == "" {
-		fatal("Worker %s has no branch - has it run a dispatch?", worker)
+		return "", fmt.Errorf("worker %s has no branch - has it run a dispatch?", worker)
 	}
 
 	if !strings.Contains(*ws.BranchName, "-") || !strings.HasPrefix(*ws.BranchName, "adam/") {
 		resolveWorkerBranch(r, worker, ws)
-		saveWorkerState(sf, ws)
-	}
-
-	if ws.LogFile == nil || *ws.LogFile == "" {
-		fatal("No log file for %s - has it run a dispatch?", worker)
-	}
-
-	sessionID, err := extractSessionID(*ws.LogFile)
-	if err != nil {
-		fatal("Cannot resume %s: %v", worker, err)
+		h.save()
 	}
 
 	repo := ghRepo(r)
 	if repo == "" {
-		fatal("Cannot detect GitHub repo")
+		return "", fmt.Errorf("cannot detect GitHub repo")
 	}
 
 	prJSON, err := run("", "gh", "-R", repo, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName,mergeable", "--limit", "1")
 	if err != nil {
-		fatal("Failed to find PR: %v", err)
+		return "", fmt.Errorf("failed to find PR: %v", err)
 	}
 	if prJSON == "" || prJSON == "[]" {
-		fatal("No PR found for branch %s", *ws.BranchName)
+		return "", fmt.Errorf("no PR found for branch %s", *ws.BranchName)
 	}
 
 	var prs []struct {
@@ -214,7 +210,7 @@ func cmdReview(args []string) {
 		Mergeable   string `json:"mergeable"`
 	}
 	if err := json.Unmarshal([]byte(prJSON), &prs); err != nil || len(prs) == 0 {
-		fatal("No PR found for branch %s", *ws.BranchName)
+		return "", fmt.Errorf("no PR found for branch %s", *ws.BranchName)
 	}
 	pr := prs[0]
 
@@ -226,33 +222,7 @@ func cmdReview(args []string) {
 	if len(failingChecks) > 0 {
 		info("Found %d failing CI check(s)", len(failingChecks))
 	}
-	prompt := buildReviewPrompt(repo, pr.Number, pr.URL, pr.HeadRefName, failingChecks, hasConflicts)
-
-	wspath := r.workerDir(worker)
-	poolDir := r.poolDir()
-	logFile := filepath.Join(poolDir, worker+".log")
-
-	ws.MarkResumed(logFile)
-	saveWorkerState(sf, ws)
-
-	inv := claudeInvocation{
-		Budget:    budget,
-		SessionID: sessionID,
-		Prompt:    prompt,
-	}
-
-	info("Reviewing PR #%d for %s (%s)...", pr.Number, worker, *ws.BranchName)
-
-	fullArgs := append([]string{"claude"}, inv.Args()...)
-	if fg {
-		runClaudeFG(wspath, logFile, sf, ws, fullArgs)
-	} else {
-		pid, err := runClaudeBG(wspath, logFile, sf, ws, fullArgs)
-		if err != nil {
-			fatal("Failed to start: %v", err)
-		}
-		info("  %s (PID %d) -> PR #%d", worker, pid, pr.Number)
-	}
+	return buildReviewPrompt(repo, pr.Number, pr.URL, pr.HeadRefName, failingChecks, hasConflicts), nil
 }
 
 type ghCheck struct {
@@ -349,7 +319,8 @@ func cmdMount(args []string) {
 	}
 
 	sf := r.workerStateFile(worker)
-	if _, err := loadWorkerState(sf); err != nil {
+	h, err := OpenWorker(sf)
+	if err != nil {
 		fatal("Worker %s not found", displayWorker(worker))
 	}
 
@@ -363,11 +334,9 @@ func cmdMount(args []string) {
 		fatal("No kitty visor socket found. Is kitty running?")
 	}
 
-	// Build claude resume command
 	sessionName := ""
-	ws, _ := loadWorkerState(sf)
-	if ws.LogFile != nil && *ws.LogFile != "" {
-		if sid, err := extractSessionID(*ws.LogFile); err == nil {
+	if h.State().LogFile != nil && *h.State().LogFile != "" {
+		if sid, err := extractSessionID(*h.State().LogFile); err == nil {
 			sessionName = sid
 		}
 	}
