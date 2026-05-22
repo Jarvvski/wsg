@@ -318,9 +318,10 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
 
 4. Read CLAUDE.md and relevant source files to understand the codebase and conventions.
 
-5. Implement the changes described in the ticket. Follow existing patterns. Write or update tests as specified.
+5. Implement using TDD: invoke the /tdd skill with the ticket requirements as context.
+   Let the skill drive the red-green-refactor loop until acceptance criteria are met.
 
-6. Run checks: linting, type checking, and tests. Fix any issues before proceeding.
+6. After /tdd completes, run the full check suite: linting, type checking, and all tests. Fix any issues.
 
 7. Describe your changes: jj describe -m "%s: <concise summary of what you implemented>"
 
