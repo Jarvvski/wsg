@@ -11,6 +11,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type tickMsg struct{}
@@ -254,6 +255,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		ta := textarea.New()
 		ta.Placeholder = "Message to " + displayWorker(w.name) + "..."
 		ta.Focus()
+		styleTextArea(&ta)
 		ta.SetHeight(3)
 		if m.width > 0 {
 			ta.SetWidth(m.width - 4)
@@ -268,6 +270,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		ta := textarea.New()
 		ta.Placeholder = "AMBA-42"
 		ta.Focus()
+		styleTextArea(&ta)
 		ta.SetHeight(1)
 		if m.width > 0 {
 			ta.SetWidth(m.width - 4)
@@ -920,6 +923,12 @@ func (m tuiModel) renderInput() string {
 	b.WriteString(m.status)
 
 	return b.String()
+}
+
+func styleTextArea(ta *textarea.Model) {
+	s := ta.Styles()
+	s.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	ta.SetStyles(s)
 }
 
 func (m tuiModel) renderDispatch() string {
