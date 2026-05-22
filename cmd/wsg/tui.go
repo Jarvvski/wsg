@@ -811,7 +811,7 @@ func readLastActivity(logFile string) string {
 		if ev.Type == "assistant" && ev.Message != nil {
 			for _, c := range ev.Message.Content {
 				if c.Type == "tool_use" {
-					input := summarizeInput(c.Input)
+					input := summarizeInputPlain(c.Input)
 					result := c.Name + input
 					if len(result) > 50 {
 						result = result[:47] + "..."

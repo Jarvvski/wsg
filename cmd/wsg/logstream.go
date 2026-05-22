@@ -288,3 +288,19 @@ func summarizeInput(input any) string {
 	}
 	return ""
 }
+
+func summarizeInputPlain(input any) string {
+	if input == nil {
+		return ""
+	}
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"command", "file_path", "description", "pattern", "query"} {
+		if val, ok := m[key].(string); ok {
+			return " " + val
+		}
+	}
+	return ""
+}
