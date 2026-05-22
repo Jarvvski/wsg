@@ -437,8 +437,9 @@ func (m tuiModel) doRebase(w *tuiWorker) tea.Cmd {
 		if _, err := run(wspath, "jj", "rebase", "-b", branch, "-d", "main"); err != nil {
 			return rebaseResultMsg{worker: name, err: err}
 		}
-		if _, err := run(wspath, "jj", "git", "push", "--named", branch+"=@"); err != nil {
-			return rebaseResultMsg{worker: name, err: err}
+		if _, err := run(wspath, "jj", "git", "push", "-b", branch); err != nil {
+			run(wspath, "jj", "op", "undo")
+			return rebaseResultMsg{worker: name, err: fmt.Errorf("rebase caused conflicts, reverted - use [r]eview instead")}
 		}
 		return rebaseResultMsg{worker: name}
 	}
@@ -484,7 +485,7 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 			return reviewResultMsg{worker: name, err: fmt.Errorf("cannot detect GitHub repo")}
 		}
 
-		prJSON, err := run("", "gh", "-R", ghRepoName, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName", "--limit", "1")
+		prJSON, err := run("", "gh", "-R", ghRepoName, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName,mergeable", "--limit", "1")
 		if err != nil {
 			return reviewResultMsg{worker: name, err: err}
 		}
@@ -495,27 +496,16 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 		var prs []struct {
 			Number      int    `json:"number"`
 			HeadRefName string `json:"headRefName"`
+			Mergeable   string `json:"mergeable"`
 		}
 		if err := json.Unmarshal([]byte(prJSON), &prs); err != nil || len(prs) == 0 {
 			return reviewResultMsg{worker: name, err: fmt.Errorf("no PR for branch %s", *ws.BranchName)}
 		}
 		pr := prs[0]
 
-		prompt := fmt.Sprintf(`Review and address PR comments on #%d.
-
-1. Fetch all review comments: gh -R %s pr view %d --comments
-   Also check inline review threads: gh api repos/%s/pulls/%d/comments --jq '.[] | {path, line, body, user: .user.login}'
-
-2. For each unresolved comment, make the requested change.
-
-3. After addressing all comments, run checks: linting, type checking, and tests.
-
-4. Describe and push:
-   jj describe -m "<ticket>: address review feedback"
-   jj git push --named %s=@
-
-5. Reply to the PR: gh -R %s pr comment %d --body "<summary of changes>"`,
-			pr.Number, ghRepoName, pr.Number, ghRepoName, pr.Number, pr.HeadRefName, ghRepoName, pr.Number)
+		hasConflicts := strings.EqualFold(pr.Mergeable, "CONFLICTING")
+		failingChecks := fetchFailingChecks(ghRepoName, pr.Number)
+		prompt := buildReviewPrompt(ghRepoName, pr.Number, "", pr.HeadRefName, failingChecks, hasConflicts)
 
 		wspath := repo.workerDir(name)
 		poolDir := repo.poolDir()

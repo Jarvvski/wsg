@@ -187,7 +187,7 @@ func cmdReview(args []string) {
 		fatal("Cannot detect GitHub repo")
 	}
 
-	prJSON, err := run("", "gh", "-R", repo, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName", "--limit", "1")
+	prJSON, err := run("", "gh", "-R", repo, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName,mergeable", "--limit", "1")
 	if err != nil {
 		fatal("Failed to find PR: %v", err)
 	}
@@ -199,34 +199,22 @@ func cmdReview(args []string) {
 		Number      int    `json:"number"`
 		URL         string `json:"url"`
 		HeadRefName string `json:"headRefName"`
+		Mergeable   string `json:"mergeable"`
 	}
 	if err := json.Unmarshal([]byte(prJSON), &prs); err != nil || len(prs) == 0 {
 		fatal("No PR found for branch %s", *ws.BranchName)
 	}
 	pr := prs[0]
 
-	prompt := fmt.Sprintf(`Review and address PR comments on %s (#%d).
-
-1. Fetch all review comments: gh -R %s pr view %d --comments
-   Also check inline review threads: gh api repos/%s/pulls/%d/comments --jq '.[] | {path, line, body, user: .user.login}'
-
-2. For each unresolved comment:
-   - Understand the reviewer's feedback
-   - Make the requested change (or document why you disagree in the PR)
-   - If a comment is unclear, make a reasonable judgment call
-
-3. After addressing all comments, run checks: linting, type checking, and tests.
-
-4. Describe and push:
-   jj describe -m "<ticket>: address review feedback"
-   jj git push --named %s=@
-
-5. Reply to the PR confirming what you addressed: gh -R %s pr comment %d --body "<summary of changes made>"`,
-		pr.URL, pr.Number,
-		repo, pr.Number,
-		repo, pr.Number,
-		pr.HeadRefName,
-		repo, pr.Number)
+	hasConflicts := strings.EqualFold(pr.Mergeable, "CONFLICTING")
+	failingChecks := fetchFailingChecks(repo, pr.Number)
+	if hasConflicts {
+		info("PR has merge conflicts")
+	}
+	if len(failingChecks) > 0 {
+		info("Found %d failing CI check(s)", len(failingChecks))
+	}
+	prompt := buildReviewPrompt(repo, pr.Number, pr.URL, pr.HeadRefName, failingChecks, hasConflicts)
 
 	wspath := r.workerDir(worker)
 	poolDir := r.poolDir()
@@ -253,6 +241,88 @@ func cmdReview(args []string) {
 		}
 		info("  %s (PID %d) -> PR #%d", worker, pid, pr.Number)
 	}
+}
+
+type ghCheck struct {
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+}
+
+func fetchFailingChecks(repo string, prNumber int) []ghCheck {
+	checksJSON, err := run("", "gh", "-R", repo, "pr", "checks",
+		fmt.Sprintf("%d", prNumber), "--json", "name,conclusion")
+	if err != nil || checksJSON == "" {
+		return nil
+	}
+	var checks []ghCheck
+	if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
+		return nil
+	}
+	var failing []ghCheck
+	for _, c := range checks {
+		switch strings.ToUpper(c.Conclusion) {
+		case "FAILURE", "STARTUP_FAILURE", "TIMED_OUT":
+			failing = append(failing, c)
+		}
+	}
+	return failing
+}
+
+func buildReviewPrompt(repo string, prNumber int, prURL, branch string, failingChecks []ghCheck, hasConflicts bool) string {
+	var b strings.Builder
+	step := 1
+
+	header := fmt.Sprintf("#%d", prNumber)
+	if prURL != "" {
+		header = fmt.Sprintf("%s (#%d)", prURL, prNumber)
+	}
+	b.WriteString(fmt.Sprintf("Review and address feedback on PR %s.\n\n", header))
+
+	if hasConflicts {
+		b.WriteString(fmt.Sprintf("%d. This PR has merge conflicts. Rebase onto trunk and resolve them:\n", step))
+		b.WriteString("   jj rebase -d 'trunk()'\n")
+		b.WriteString("   Then resolve any conflict markers in the affected files.\n")
+		b.WriteString(fmt.Sprintf("   After resolving, push: jj git push --named %s=@\n\n", branch))
+		step++
+	}
+
+	b.WriteString(fmt.Sprintf("%d. Fetch all review comments: gh -R %s pr view %d --comments\n", step, repo, prNumber))
+	b.WriteString(fmt.Sprintf("   Also check inline review threads: gh api repos/%s/pulls/%d/comments --jq '.[] | {path, line, body, user: .user.login}'\n\n", repo, prNumber))
+	step++
+
+	b.WriteString(fmt.Sprintf("%d. For each unresolved comment:\n", step))
+	b.WriteString("   - Understand the reviewer's feedback\n")
+	b.WriteString("   - Make the requested change (or document why you disagree in the PR)\n")
+	b.WriteString("   - If a comment is unclear, make a reasonable judgment call\n\n")
+	step++
+
+	if len(failingChecks) > 0 {
+		b.WriteString(fmt.Sprintf("%d. Fix failing CI checks. These checks are FAILING:\n", step))
+		for _, c := range failingChecks {
+			b.WriteString(fmt.Sprintf("   - %s\n", c.Name))
+		}
+		b.WriteString("   Investigate and fix each failure:\n")
+		b.WriteString(fmt.Sprintf("   - List failed runs: gh -R %s run list --branch %s --status failure --json databaseId,name --limit 5\n", repo, branch))
+		b.WriteString(fmt.Sprintf("   - View failure logs: gh -R %s run view <run-id> --log-failed\n", repo))
+		b.WriteString("   - Fix the root cause in the code\n\n")
+		step++
+	}
+
+	suffix := ""
+	if len(failingChecks) > 0 {
+		suffix = " and CI failures"
+	}
+	b.WriteString(fmt.Sprintf("%d. After addressing all feedback%s, run checks: linting, type checking, and tests.\n\n", step, suffix))
+	step++
+
+	b.WriteString(fmt.Sprintf("%d. Describe and push:\n", step))
+	b.WriteString("   jj describe -m \"<ticket>: address review feedback\"\n")
+	b.WriteString(fmt.Sprintf("   jj git push --named %s=@\n\n", branch))
+	step++
+
+	b.WriteString(fmt.Sprintf("%d. Reply to the PR confirming what you addressed: gh -R %s pr comment %d --body \"<summary of changes made>\"", step, repo, prNumber))
+
+	return b.String()
 }
 
 func cmdMount(args []string) {
