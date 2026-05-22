@@ -820,8 +820,8 @@ func readLastActivity(logFile string) string {
 		return ""
 	}
 
-	// Read last 4KB
-	readSize := int64(4096)
+	// Read last 64KB - result events can be large (contain full output text)
+	readSize := int64(65536)
 	if fi.Size() < readSize {
 		readSize = fi.Size()
 	}
