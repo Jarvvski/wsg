@@ -444,7 +444,7 @@ func formatEventToString(line string, state *logState) string {
 	switch ev.Type {
 	case "system":
 		if ev.Subtype == "init" {
-			return "--- session started ---"
+			return colorize("--- session started ---", colorDim)
 		}
 	case "assistant":
 		if ev.Message == nil {
@@ -460,7 +460,7 @@ func formatEventToString(line string, state *logState) string {
 				}
 			case "tool_use":
 				input := summarizeInput(c.Input)
-				parts = append(parts, c.Name+input)
+				parts = append(parts, colorize(c.Name, colorYellow)+input)
 			}
 		}
 		return strings.Join(parts, " ")
@@ -468,10 +468,18 @@ func formatEventToString(line string, state *logState) string {
 		dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
 		cost := fmt.Sprintf("$%.2f", ev.TotalCost)
 		status := "done"
+		statusColor := colorGreen
 		if ev.IsError {
 			status = "error"
+			statusColor = colorRed
 		}
-		return fmt.Sprintf("--- %s in %s, %d turns, %s", status, dur, ev.NumTurns, cost)
+		return fmt.Sprintf("%s %s in %s, %d turns, %s",
+			colorize("---", colorDim),
+			colorize(status, statusColor),
+			dur,
+			ev.NumTurns,
+			cost,
+		)
 	}
 	return ""
 }
