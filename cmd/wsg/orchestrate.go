@@ -656,7 +656,24 @@ func cmdOrchestrate(args []string) {
 			fatal("Failed to build dependency graph: %v", err)
 		}
 		if dg == nil {
-			fatal("%s has no sub-issues with dependencies", parent)
+			// No sub-issues - fall back to single-ticket dispatch
+			opts.TicketID = parent
+			worker, werr := findIdleWorker(r)
+			if werr != nil {
+				cfg, cfgErr := loadPoolConfig(r.poolConfigFile())
+				if cfgErr != nil {
+					fatal("No pool. Run: wsg pool create --size N")
+				}
+				newSize := cfg.Size + 1
+				info("Auto-expanding pool to %d for %s", newSize, parent)
+				cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
+				worker, werr = findIdleWorker(r)
+				if werr != nil {
+					fatal("No idle workers for %s", parent)
+				}
+			}
+			launchWorker(r, worker, &opts, nil)
+			return
 		}
 	}
 

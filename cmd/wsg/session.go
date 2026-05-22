@@ -41,13 +41,17 @@ func cmdSend(args []string) {
 	}
 
 	var worker, prompt string
-	fg := false
+	var fgFlag *bool
 	budget := "5"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--fg":
-			fg = true
+			t := true
+			fgFlag = &t
+		case "--bg":
+			f := false
+			fgFlag = &f
 		case "--budget":
 			if i+1 < len(args) {
 				budget = args[i+1]
@@ -63,13 +67,15 @@ func cmdSend(args []string) {
 	}
 
 	if worker == "" || prompt == "" {
-		fatal("Usage: wsg send <worker> \"<prompt>\" [--fg] [--budget USD]")
+		fatal("Usage: wsg send <worker> \"<prompt>\" [--fg|--bg] [--budget USD]")
 	}
 
 	r, err := newRepoContext()
 	if err != nil {
 		fatal("Not in a jj repo")
 	}
+
+	fg := resolveForeground(r, fgFlag)
 
 	worker = resolveWorker(worker)
 	sf := r.workerStateFile(worker)
@@ -125,13 +131,17 @@ func cmdReview(args []string) {
 	}
 
 	var worker string
-	fg := false
+	var fgFlag *bool
 	budget := "5"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--fg":
-			fg = true
+			t := true
+			fgFlag = &t
+		case "--bg":
+			f := false
+			fgFlag = &f
 		case "--budget":
 			if i+1 < len(args) {
 				budget = args[i+1]
@@ -145,13 +155,15 @@ func cmdReview(args []string) {
 	}
 
 	if worker == "" {
-		fatal("Usage: wsg review <worker> [--fg] [--budget USD]")
+		fatal("Usage: wsg review <worker> [--fg|--bg] [--budget USD]")
 	}
 
 	r, err := newRepoContext()
 	if err != nil {
 		fatal("Not in a jj repo")
 	}
+
+	fg := resolveForeground(r, fgFlag)
 
 	worker = resolveWorker(worker)
 	sf := r.workerStateFile(worker)

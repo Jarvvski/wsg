@@ -66,10 +66,15 @@ func cmdDispatch(args []string) {
 	}
 
 	var tickets []string
+	var fgFlag *bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--fg":
-			opts.Foreground = true
+			t := true
+			fgFlag = &t
+		case "--bg":
+			f := false
+			fgFlag = &f
 		case "--model":
 			if i+1 < len(args) {
 				opts.Model = args[i+1]
@@ -96,18 +101,20 @@ func cmdDispatch(args []string) {
 		}
 	}
 
+	r, err := newRepoContext()
+	if err != nil {
+		fatal("Not in a jj repo")
+	}
+
+	opts.Foreground = resolveForeground(r, fgFlag)
+
 	if opts.AllMode {
 		dispatchAll(&opts)
 		return
 	}
 
 	if len(tickets) == 0 {
-		fatal("Usage: wsg dispatch <TICKET>... [--fg] [--model MODEL] [--budget USD]")
-	}
-
-	r, err := newRepoContext()
-	if err != nil {
-		fatal("Not in a jj repo")
+		fatal("Usage: wsg dispatch <TICKET>... [--fg|--bg] [--model MODEL] [--budget USD]")
 	}
 
 	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
@@ -277,7 +284,8 @@ CRITICAL RULES:
 - To push your work: jj git push --named <branch>=@
 - You have access to Linear MCP tools for fetching ticket details and updating status.
 - Do NOT ask questions. Make reasonable decisions and proceed.
-- If you encounter ambiguity, document your assumptions in the PR description.`, repo, branchPrefix, ticketLower, branchPrefix)
+- If you encounter ambiguity, document your assumptions in the PR description.
+- Do NOT add a "Generated with Claude Code" footer or any AI attribution to PRs, commits, or comments.`, repo, branchPrefix, ticketLower, branchPrefix)
 
 	if depCtx != nil && depCtx.Context != "" {
 		systemPrompt += fmt.Sprintf(`

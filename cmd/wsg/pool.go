@@ -14,10 +14,11 @@ import (
 )
 
 type PoolConfig struct {
-	Size      int      `json:"size"`
-	GHRepo    string   `json:"gh_repo"`
-	Workers   []string `json:"workers"`
-	CreatedAt string   `json:"created_at"`
+	Size       int      `json:"size"`
+	GHRepo     string   `json:"gh_repo"`
+	Workers    []string `json:"workers"`
+	CreatedAt  string   `json:"created_at"`
+	Foreground *bool    `json:"foreground,omitempty"`
 }
 
 type WorkerState struct {
@@ -30,6 +31,16 @@ type WorkerState struct {
 	BranchName  *string `json:"branch_name"`
 	ExitCode    *int    `json:"exit_code"`
 	Error       *string `json:"error"`
+}
+
+func resolveForeground(r *RepoContext, flag *bool) bool {
+	if flag != nil {
+		return *flag
+	}
+	if cfg, err := loadPoolConfig(r.poolConfigFile()); err == nil && cfg.Foreground != nil {
+		return *cfg.Foreground
+	}
+	return false
 }
 
 func newIdleWorkerState() *WorkerState {

@@ -346,8 +346,8 @@ func TestPoolConfigRoundTrip(t *testing.T) {
 
 func TestGenerateWorkerName(t *testing.T) {
 	name := generateWorkerName()
-	if len(name) != 6 {
-		t.Errorf("expected 6-char hex, got %q (len %d)", name, len(name))
+	if len(name) != 13 || name[:7] != "worker-" {
+		t.Errorf("expected worker-XXXXXX, got %q (len %d)", name, len(name))
 	}
 	name2 := generateWorkerName()
 	if name == name2 {

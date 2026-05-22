@@ -118,9 +118,9 @@ Pool:
   wsg pool destroy              Tear down all workers and remove pool
 
 Dispatch:
-  wsg dispatch <TICKET>...      Assign ticket(s) to idle workers (background)
-  wsg dispatch <TICKET> --fg    Assign ticket and watch in foreground
+  wsg dispatch <TICKET>...      Assign ticket(s) to idle workers
   wsg dispatch --all            Dispatch all ready-for-agent tickets
+    --fg / --bg                 Override foreground config for this run
     --model MODEL               Model for worker agents (default: opus)
     --budget USD                Max spend per worker (default: 20)
     --label LABEL               Label filter for --all (default: ready-for-agent)
@@ -131,11 +131,14 @@ Dispatch:
   for blocked issues start on their blocker's branch (stacked PRs).
   Re-run the same command to resume after Ctrl-C.
   wsg send <worker> "<prompt>"  Resume worker session with a follow-up prompt
-    --fg                        Run in foreground
+    --fg / --bg                 Override foreground config for this run
   wsg review <worker>           Address PR review comments in worker session
-    --fg                        Run in foreground
+    --fg / --bg                 Override foreground config for this run
     --budget USD                Max spend (default: 5)
   wsg mount <worker>            Open worker in kitty (claude + two shells)
+
+Config (pool.json):
+  "foreground": true/false      Default foreground mode (default: false)
 
 Observability:
   wsg status                    Alias for pool list

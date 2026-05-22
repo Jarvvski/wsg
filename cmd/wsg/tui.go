@@ -161,17 +161,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Review failed: %v", msg.err)
 		} else {
 			m.status = fmt.Sprintf("Review dispatched for %s", displayWorker(msg.worker))
-			m.view = viewTail
-			m.tailWorker = msg.worker
-			m.tailLines = nil
-			m.tailOffset = 0
-			m.loadTailLines()
 		}
 	case dispatchResultMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Dispatch failed: %v", msg.err)
 		} else if msg.orchestrated {
 			m.status = fmt.Sprintf("Orchestrating %s (%d sub-issues)", msg.ticket, msg.subIssueCount)
+		} else if msg.backgrounded {
+			m.status = fmt.Sprintf("Dispatching %s in background", msg.ticket)
 		} else {
 			m.status = fmt.Sprintf("Dispatched %s to %s", msg.ticket, displayWorker(msg.worker))
 			m.view = viewTail
@@ -405,6 +402,7 @@ type dispatchResultMsg struct {
 	ticket        string
 	worker        string
 	orchestrated  bool
+	backgrounded  bool
 	subIssueCount int
 	err           error
 }
@@ -579,7 +577,7 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 			Budget:   "20",
 		}
 
-		// Check for existing dispatch group (resume)
+		// Resume existing orchestration (file I/O only, fast)
 		dgFile := dispatchGroupFile(repo, ticket)
 		if dg := syncExistingGroup(repo, dgFile); dg != nil {
 			if !isGroupTerminal(dg) {
@@ -592,35 +590,10 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 			}
 		}
 
-		// Try to build dependency graph (detects parent issues)
-		dg, err := buildDependencyGraph(repo, ticket, opts)
-		if err == nil && dg != nil {
-			spawnOrchestrator(repo, ticket, opts)
-			return dispatchResultMsg{
-				ticket:        ticket,
-				orchestrated:  true,
-				subIssueCount: len(dg.SubIssues),
-			}
-		}
-
-		// Single ticket dispatch - find idle worker
-		worker, err := findIdleWorker(repo)
-		if err != nil {
-			// Auto-resize pool
-			cfg, cfgErr := loadPoolConfig(repo.poolConfigFile())
-			if cfgErr != nil {
-				return dispatchResultMsg{ticket: ticket, err: fmt.Errorf("no pool")}
-			}
-			newSize := cfg.Size + 1
-			cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
-			worker, err = findIdleWorker(repo)
-			if err != nil {
-				return dispatchResultMsg{ticket: ticket, err: fmt.Errorf("no idle workers after resize")}
-			}
-		}
-
-		launchWorker(repo, worker, opts, nil)
-		return dispatchResultMsg{ticket: ticket, worker: worker}
+		// Spawn background orchestrator - handles both sub-issue detection
+		// and single-ticket fallback without blocking the TUI
+		spawnOrchestrator(repo, ticket, opts)
+		return dispatchResultMsg{ticket: ticket, backgrounded: true}
 	}
 }
 
