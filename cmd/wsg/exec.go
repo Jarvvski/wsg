@@ -100,6 +100,43 @@ func startForeground(dir string, logFile string, name string, args ...string) (i
 	return exitCode, nil
 }
 
+func runClaudeFG(wspath, logFile, sf string, ws *WorkerState, claudeArgs []string) {
+	exitCode, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
+	if err != nil {
+		ws.MarkFailed(1, err.Error())
+	} else if exitCode == 0 {
+		ws.MarkDone(exitCode)
+	} else {
+		ws.MarkFailed(exitCode, "")
+	}
+	saveWorkerState(sf, ws)
+}
+
+func runClaudeBG(wspath, logFile, sf string, ws *WorkerState, claudeArgs []string) (int, error) {
+	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
+	if err != nil {
+		ws.MarkFailed(1, err.Error())
+		saveWorkerState(sf, ws)
+		return 0, err
+	}
+	ws.SetPID(pid)
+	saveWorkerState(sf, ws)
+
+	go func() {
+		waitForProcess(pid)
+		ws, err := loadWorkerState(sf)
+		if err != nil {
+			return
+		}
+		if ws.Status == "busy" {
+			ws.MarkDone(0)
+		}
+		saveWorkerState(sf, ws)
+	}()
+
+	return pid, nil
+}
+
 func jjConfigGet(dir string, key string) (string, error) {
 	return run(dir, "jj", "config", "get", key)
 }

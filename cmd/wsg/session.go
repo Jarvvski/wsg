@@ -93,98 +93,29 @@ func cmdSend(args []string) {
 		}
 	}
 
-	now := nowUTC()
-	ws.Status = "busy"
-	ws.StartedAt = &now
-	ws.CompletedAt = nil
-	ws.ExitCode = nil
-	ws.Error = nil
-	ws.LogFile = &logFile
+	ws.MarkResumed(logFile)
 	saveWorkerState(sf, ws)
 
-	var claudeArgs []string
+	inv := claudeInvocation{
+		Budget:    budget,
+		SessionID: sessionID,
+		Prompt:    prompt,
+	}
 	if sessionID != "" {
-		claudeArgs = []string{
-			"-p",
-			"--resume", sessionID,
-			"--fork-session",
-			"--max-budget-usd", budget,
-			"--output-format", "stream-json",
-			"--verbose",
-			prompt,
-		}
 		info("Sending to %s (session %s)...", worker, sessionID[:8])
 	} else {
-		repo := ghRepo(r)
-		systemPrompt := fmt.Sprintf(`You are an autonomous agent in a jj (Jujutsu VCS) workspace.
-
-CRITICAL RULES:
-- Use jj commands, NEVER git commands.
-- The gh CLI requires: gh -R %s pr create ...
-- To push your work: jj git push --named <branch>=@
-- Do NOT ask questions. Make reasonable decisions and proceed.`, repo)
-
-		claudeArgs = []string{
-			"-p",
-			"--max-budget-usd", budget,
-			"--output-format", "stream-json",
-			"--verbose",
-			"--append-system-prompt", systemPrompt,
-			prompt,
-		}
+		inv.SystemPrompt = sendSystemPrompt(ghRepo(r))
 		info("Starting fresh session for %s...", worker)
 	}
-
+	fullArgs := append([]string{"claude"}, inv.Args()...)
 	if fg {
-		exitCode, err := startForeground(wspath, logFile, "claude", claudeArgs...)
-		now := nowUTC()
-		if err != nil {
-			errMsg := err.Error()
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.Error = &errMsg
-			ec := 1
-			ws.ExitCode = &ec
-		} else if exitCode == 0 {
-			ws.Status = "done"
-			ws.CompletedAt = &now
-			ws.ExitCode = &exitCode
-		} else {
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.ExitCode = &exitCode
-		}
-		saveWorkerState(sf, ws)
+		runClaudeFG(wspath, logFile, sf, ws, fullArgs)
 	} else {
-		pid, err := startBackground(wspath, logFile, "claude", claudeArgs...)
+		pid, err := runClaudeBG(wspath, logFile, sf, ws, fullArgs)
 		if err != nil {
-			errMsg := err.Error()
-			now := nowUTC()
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.Error = &errMsg
-			saveWorkerState(sf, ws)
 			fatal("Failed to start: %v", err)
 		}
-		ws.PID = &pid
-		saveWorkerState(sf, ws)
 		info("  %s (PID %d) -> %s", worker, pid, prompt[:min(len(prompt), 60)])
-
-		go func() {
-			waitForProcess(pid)
-			ws, err := loadWorkerState(sf)
-			if err != nil {
-				return
-			}
-			now := nowUTC()
-			ws.CompletedAt = &now
-			if ws.Status == "busy" {
-				ws.Status = "done"
-				ec := 0
-				ws.ExitCode = &ec
-			}
-			saveWorkerState(sf, ws)
-		}()
 	}
 }
 
@@ -301,76 +232,26 @@ func cmdReview(args []string) {
 	poolDir := r.poolDir()
 	logFile := filepath.Join(poolDir, worker+".log")
 
-	now := nowUTC()
-	ws.Status = "busy"
-	ws.StartedAt = &now
-	ws.CompletedAt = nil
-	ws.ExitCode = nil
-	ws.Error = nil
+	ws.MarkResumed(logFile)
 	saveWorkerState(sf, ws)
 
-	claudeArgs := []string{
-		"-p",
-		"--resume", sessionID,
-		"--fork-session",
-		"--max-budget-usd", budget,
-		"--output-format", "stream-json",
-		"--verbose",
-		prompt,
+	inv := claudeInvocation{
+		Budget:    budget,
+		SessionID: sessionID,
+		Prompt:    prompt,
 	}
 
 	info("Reviewing PR #%d for %s (%s)...", pr.Number, worker, *ws.BranchName)
 
+	fullArgs := append([]string{"claude"}, inv.Args()...)
 	if fg {
-		exitCode, err := startForeground(wspath, logFile, "claude", claudeArgs...)
-		now := nowUTC()
-		if err != nil {
-			errMsg := err.Error()
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.Error = &errMsg
-			ec := 1
-			ws.ExitCode = &ec
-		} else if exitCode == 0 {
-			ws.Status = "done"
-			ws.CompletedAt = &now
-			ws.ExitCode = &exitCode
-		} else {
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.ExitCode = &exitCode
-		}
-		saveWorkerState(sf, ws)
+		runClaudeFG(wspath, logFile, sf, ws, fullArgs)
 	} else {
-		pid, err := startBackground(wspath, logFile, "claude", claudeArgs...)
+		pid, err := runClaudeBG(wspath, logFile, sf, ws, fullArgs)
 		if err != nil {
-			errMsg := err.Error()
-			now := nowUTC()
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.Error = &errMsg
-			saveWorkerState(sf, ws)
 			fatal("Failed to start: %v", err)
 		}
-		ws.PID = &pid
-		saveWorkerState(sf, ws)
 		info("  %s (PID %d) -> PR #%d", worker, pid, pr.Number)
-
-		go func() {
-			waitForProcess(pid)
-			ws, err := loadWorkerState(sf)
-			if err != nil {
-				return
-			}
-			now := nowUTC()
-			ws.CompletedAt = &now
-			if ws.Status == "busy" {
-				ws.Status = "done"
-				ec := 0
-				ws.ExitCode = &ec
-			}
-			saveWorkerState(sf, ws)
-		}()
 	}
 }
 

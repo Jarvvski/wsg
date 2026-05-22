@@ -36,6 +36,52 @@ func newIdleWorkerState() *WorkerState {
 	return &WorkerState{Status: "idle"}
 }
 
+func (ws *WorkerState) MarkDispatched(ticket, logFile, branchName string) {
+	now := nowUTC()
+	ws.Status = "busy"
+	ws.Ticket = &ticket
+	ws.StartedAt = &now
+	ws.LogFile = &logFile
+	ws.BranchName = &branchName
+	ws.CompletedAt = nil
+	ws.ExitCode = nil
+	ws.Error = nil
+	ws.PID = nil
+}
+
+func (ws *WorkerState) MarkDone(exitCode int) {
+	now := nowUTC()
+	ws.Status = "done"
+	ws.CompletedAt = &now
+	ws.ExitCode = &exitCode
+}
+
+func (ws *WorkerState) MarkFailed(exitCode int, errMsg string) {
+	now := nowUTC()
+	ws.Status = "failed"
+	ws.CompletedAt = &now
+	ws.ExitCode = &exitCode
+	ws.Error = &errMsg
+}
+
+func (ws *WorkerState) SetPID(pid int) {
+	ws.PID = &pid
+}
+
+func (ws *WorkerState) Reset() {
+	*ws = WorkerState{Status: "idle"}
+}
+
+func (ws *WorkerState) MarkResumed(logFile string) {
+	now := nowUTC()
+	ws.Status = "busy"
+	ws.StartedAt = &now
+	ws.LogFile = &logFile
+	ws.CompletedAt = nil
+	ws.ExitCode = nil
+	ws.Error = nil
+}
+
 func loadPoolConfig(path string) (*PoolConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -94,23 +140,31 @@ func checkWorkerLiveness(r *RepoContext, worker string) {
 	}
 	if ws.Status == "busy" && ws.PID != nil {
 		if !processAlive(*ws.PID) {
-			now := nowUTC()
-			ws.CompletedAt = &now
 			if ws.LogFile != nil {
 				if result := readLogResult(*ws.LogFile); result != nil {
-					ws.Status = result.Status
-					ws.ExitCode = result.ExitCode
-					ws.Error = result.Error
 					if result.Status == "done" {
+						ec := 0
+						if result.ExitCode != nil {
+							ec = *result.ExitCode
+						}
+						ws.MarkDone(ec)
 						resolveWorkerBranch(r, worker, ws)
+					} else {
+						ec := 1
+						if result.ExitCode != nil {
+							ec = *result.ExitCode
+						}
+						errMsg := ""
+						if result.Error != nil {
+							errMsg = *result.Error
+						}
+						ws.MarkFailed(ec, errMsg)
 					}
 					saveWorkerState(sf, ws)
 					return
 				}
 			}
-			errMsg := "Process exited unexpectedly"
-			ws.Status = "failed"
-			ws.Error = &errMsg
+			ws.MarkFailed(1, "Process exited unexpectedly")
 			saveWorkerState(sf, ws)
 		}
 	}
@@ -598,8 +652,8 @@ func cmdPoolReset(args []string) {
 		killProcess(*ws.PID)
 	}
 
-	// Mark idle immediately, then clean workspace in background
-	saveWorkerState(sf, newIdleWorkerState())
+	ws.Reset()
+	saveWorkerState(sf, ws)
 	info("Reset %s to idle", worker)
 
 	wspath := r.workerDir(worker)

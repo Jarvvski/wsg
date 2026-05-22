@@ -322,8 +322,8 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		sf := m.repo.workerStateFile(w.name)
-		saveWorkerState(sf, newIdleWorkerState())
-		w.state = newIdleWorkerState()
+		w.state.Reset()
+		saveWorkerState(sf, w.state)
 		w.lastActivity = ""
 		m.status = fmt.Sprintf("Reset %s to idle", displayWorker(w.name))
 		return m, nil
@@ -521,47 +521,19 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 		poolDir := repo.poolDir()
 		logFile := fmt.Sprintf("%s/%s.log", poolDir, name)
 
-		now := nowUTC()
-		ws.Status = "busy"
-		ws.StartedAt = &now
-		ws.CompletedAt = nil
-		ws.ExitCode = nil
-		ws.Error = nil
+		ws.MarkResumed(logFile)
 		saveWorkerState(sf, ws)
 
-		claudeArgs := []string{
-			"-p",
-			"--resume", sessionID,
-			"--fork-session",
-			"--max-budget-usd", "5",
-			"--output-format", "stream-json",
-			"--verbose",
-			prompt,
+		inv := claudeInvocation{
+			Budget:    "5",
+			SessionID: sessionID,
+			Prompt:    prompt,
 		}
-
-		pid, err := startBackground(wspath, logFile, "claude", claudeArgs...)
+		fullArgs := append([]string{"claude"}, inv.Args()...)
+		_, err = runClaudeBG(wspath, logFile, sf, ws, fullArgs)
 		if err != nil {
 			return reviewResultMsg{worker: name, err: err}
 		}
-		ws.PID = &pid
-		ws.LogFile = &logFile
-		saveWorkerState(sf, ws)
-
-		go func() {
-			waitForProcess(pid)
-			ws, err := loadWorkerState(sf)
-			if err != nil {
-				return
-			}
-			now := nowUTC()
-			ws.CompletedAt = &now
-			if ws.Status == "busy" {
-				ws.Status = "done"
-				ec := 0
-				ws.ExitCode = &ec
-			}
-			saveWorkerState(sf, ws)
-		}()
 
 		return reviewResultMsg{worker: name}
 	}
@@ -587,68 +559,22 @@ func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 			}
 		}
 
-		now := nowUTC()
-		ws.Status = "busy"
-		ws.StartedAt = &now
-		ws.CompletedAt = nil
-		ws.ExitCode = nil
-		ws.Error = nil
-		ws.LogFile = &logFile
+		ws.MarkResumed(logFile)
 		saveWorkerState(sf, ws)
 
-		var claudeArgs []string
-		if sessionID != "" {
-			claudeArgs = []string{
-				"-p",
-				"--resume", sessionID,
-				"--fork-session",
-				"--max-budget-usd", "5",
-				"--output-format", "stream-json",
-				"--verbose",
-				prompt,
-			}
-		} else {
-			ghRepoName := ghRepo(repo)
-			systemPrompt := fmt.Sprintf(`You are an autonomous agent in a jj (Jujutsu VCS) workspace.
-
-CRITICAL RULES:
-- Use jj commands, NEVER git commands.
-- The gh CLI requires: gh -R %s pr create ...
-- To push your work: jj git push --named <branch>=@
-- Do NOT ask questions. Make reasonable decisions and proceed.`, ghRepoName)
-
-			claudeArgs = []string{
-				"-p",
-				"--max-budget-usd", "5",
-				"--output-format", "stream-json",
-				"--verbose",
-				"--append-system-prompt", systemPrompt,
-				prompt,
-			}
+		inv := claudeInvocation{
+			Budget:    "5",
+			SessionID: sessionID,
+			Prompt:    prompt,
 		}
-
-		pid, err := startBackground(wspath, logFile, "claude", claudeArgs...)
+		if sessionID == "" {
+			inv.SystemPrompt = sendSystemPrompt(ghRepo(repo))
+		}
+		fullArgs := append([]string{"claude"}, inv.Args()...)
+		_, err = runClaudeBG(wspath, logFile, sf, ws, fullArgs)
 		if err != nil {
 			return sendResultMsg{worker: workerName, err: err}
 		}
-		ws.PID = &pid
-		saveWorkerState(sf, ws)
-
-		go func() {
-			waitForProcess(pid)
-			ws, err := loadWorkerState(sf)
-			if err != nil {
-				return
-			}
-			now := nowUTC()
-			ws.CompletedAt = &now
-			if ws.Status == "busy" {
-				ws.Status = "done"
-				ec := 0
-				ws.ExitCode = &ec
-			}
-			saveWorkerState(sf, ws)
-		}()
 
 		return sendResultMsg{worker: workerName}
 	}
@@ -665,17 +591,9 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 
 		// Check for existing dispatch group (resume)
 		dgFile := dispatchGroupFile(repo, ticket)
-		if dg, err := loadDispatchGroup(dgFile); err == nil {
-			syncGroupFromWorkers(repo, dg)
-			revalidateBranches(repo, dg)
-			saveDispatchGroup(dgFile, dg)
+		if dg := syncExistingGroup(repo, dgFile); dg != nil {
 			if !isGroupTerminal(dg) {
 				spawnOrchestrator(repo, ticket, opts)
-				return dispatchResultMsg{
-					ticket:        ticket,
-					orchestrated:  true,
-					subIssueCount: len(dg.SubIssues),
-				}
 			}
 			return dispatchResultMsg{
 				ticket:        ticket,

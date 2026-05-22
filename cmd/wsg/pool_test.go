@@ -7,6 +7,234 @@ import (
 	"testing"
 )
 
+func TestMarkDispatched(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/worker-1.log", "amba-42")
+
+	if ws.Status != "busy" {
+		t.Errorf("status = %q, want busy", ws.Status)
+	}
+	if ws.Ticket == nil || *ws.Ticket != "AMBA-42" {
+		t.Errorf("ticket = %v, want AMBA-42", ws.Ticket)
+	}
+	if ws.LogFile == nil || *ws.LogFile != "/tmp/worker-1.log" {
+		t.Errorf("logFile = %v, want /tmp/worker-1.log", ws.LogFile)
+	}
+	if ws.BranchName == nil || *ws.BranchName != "amba-42" {
+		t.Errorf("branchName = %v, want amba-42", ws.BranchName)
+	}
+	if ws.StartedAt == nil || *ws.StartedAt == "" {
+		t.Error("startedAt should be set")
+	}
+	if ws.CompletedAt != nil {
+		t.Error("completedAt should be nil")
+	}
+	if ws.ExitCode != nil {
+		t.Error("exitCode should be nil")
+	}
+	if ws.Error != nil {
+		t.Error("error should be nil")
+	}
+	if ws.PID != nil {
+		t.Error("pid should be nil")
+	}
+}
+
+func TestMarkResumed(t *testing.T) {
+	ticket := "AMBA-42"
+	branch := "adam/amba-42-fix-login"
+	ws := &WorkerState{
+		Status:     "done",
+		Ticket:     &ticket,
+		BranchName: &branch,
+	}
+
+	ws.MarkResumed("/tmp/worker-1.log")
+
+	if ws.Status != "busy" {
+		t.Errorf("status = %q, want busy", ws.Status)
+	}
+	if ws.Ticket == nil || *ws.Ticket != "AMBA-42" {
+		t.Error("ticket should be preserved")
+	}
+	if ws.BranchName == nil || *ws.BranchName != "adam/amba-42-fix-login" {
+		t.Error("branchName should be preserved")
+	}
+	if ws.LogFile == nil || *ws.LogFile != "/tmp/worker-1.log" {
+		t.Errorf("logFile = %v, want /tmp/worker-1.log", ws.LogFile)
+	}
+	if ws.StartedAt == nil || *ws.StartedAt == "" {
+		t.Error("startedAt should be set")
+	}
+	if ws.CompletedAt != nil {
+		t.Error("completedAt should be cleared")
+	}
+	if ws.ExitCode != nil {
+		t.Error("exitCode should be cleared")
+	}
+	if ws.Error != nil {
+		t.Error("error should be cleared")
+	}
+}
+
+func TestMarkDone(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+
+	ws.MarkDone(0)
+
+	if ws.Status != "done" {
+		t.Errorf("status = %q, want done", ws.Status)
+	}
+	if ws.CompletedAt == nil || *ws.CompletedAt == "" {
+		t.Error("completedAt should be set")
+	}
+	if ws.ExitCode == nil || *ws.ExitCode != 0 {
+		t.Errorf("exitCode = %v, want 0", ws.ExitCode)
+	}
+	if ws.Ticket == nil || *ws.Ticket != "AMBA-42" {
+		t.Error("ticket should be preserved")
+	}
+}
+
+func TestMarkFailed(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+
+	ws.MarkFailed(1, "process crashed")
+
+	if ws.Status != "failed" {
+		t.Errorf("status = %q, want failed", ws.Status)
+	}
+	if ws.CompletedAt == nil || *ws.CompletedAt == "" {
+		t.Error("completedAt should be set")
+	}
+	if ws.ExitCode == nil || *ws.ExitCode != 1 {
+		t.Errorf("exitCode = %v, want 1", ws.ExitCode)
+	}
+	if ws.Error == nil || *ws.Error != "process crashed" {
+		t.Errorf("error = %v, want 'process crashed'", ws.Error)
+	}
+}
+
+func TestSetPID(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+
+	ws.SetPID(12345)
+
+	if ws.PID == nil || *ws.PID != 12345 {
+		t.Errorf("pid = %v, want 12345", ws.PID)
+	}
+	if ws.Status != "busy" {
+		t.Error("status should remain busy")
+	}
+}
+
+func TestReset(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+	ws.SetPID(12345)
+	ws.MarkDone(0)
+
+	ws.Reset()
+
+	if ws.Status != "idle" {
+		t.Errorf("status = %q, want idle", ws.Status)
+	}
+	if ws.Ticket != nil {
+		t.Error("ticket should be nil")
+	}
+	if ws.PID != nil {
+		t.Error("pid should be nil")
+	}
+	if ws.StartedAt != nil {
+		t.Error("startedAt should be nil")
+	}
+	if ws.CompletedAt != nil {
+		t.Error("completedAt should be nil")
+	}
+	if ws.LogFile != nil {
+		t.Error("logFile should be nil")
+	}
+	if ws.BranchName != nil {
+		t.Error("branchName should be nil")
+	}
+	if ws.ExitCode != nil {
+		t.Error("exitCode should be nil")
+	}
+	if ws.Error != nil {
+		t.Error("error should be nil")
+	}
+}
+
+func TestMarkDispatchedJSONRoundTrip(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+	ws.SetPID(9999)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	saveWorkerState(path, ws)
+
+	raw, _ := os.ReadFile(path)
+	var m map[string]any
+	json.Unmarshal(raw, &m)
+
+	if m["status"] != "busy" {
+		t.Errorf("JSON status = %v, want busy", m["status"])
+	}
+	if m["ticket"] != "AMBA-42" {
+		t.Errorf("JSON ticket = %v, want AMBA-42", m["ticket"])
+	}
+	if m["pid"] != float64(9999) {
+		t.Errorf("JSON pid = %v, want 9999", m["pid"])
+	}
+	for _, key := range []string{"completed_at", "exit_code", "error"} {
+		val, exists := m[key]
+		if !exists {
+			t.Errorf("key %q missing from JSON", key)
+		} else if val != nil {
+			t.Errorf("key %q should be null, got %v", key, val)
+		}
+	}
+
+	loaded, _ := loadWorkerState(path)
+	if loaded.Status != "busy" {
+		t.Errorf("loaded status = %q, want busy", loaded.Status)
+	}
+	if loaded.PID == nil || *loaded.PID != 9999 {
+		t.Errorf("loaded pid = %v, want 9999", loaded.PID)
+	}
+}
+
+func TestResetJSONRoundTrip(t *testing.T) {
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+	ws.MarkDone(0)
+	ws.Reset()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	saveWorkerState(path, ws)
+
+	raw, _ := os.ReadFile(path)
+	var m map[string]any
+	json.Unmarshal(raw, &m)
+
+	if m["status"] != "idle" {
+		t.Errorf("JSON status = %v, want idle", m["status"])
+	}
+	for _, key := range []string{"ticket", "pid", "started_at", "completed_at", "log_file", "branch_name", "exit_code", "error"} {
+		val, exists := m[key]
+		if !exists {
+			t.Errorf("key %q missing from JSON", key)
+		} else if val != nil {
+			t.Errorf("key %q should be null, got %v", key, val)
+		}
+	}
+}
+
 func TestWorkerStateJSONRoundTrip(t *testing.T) {
 	ws := newIdleWorkerState()
 	dir := t.TempDir()

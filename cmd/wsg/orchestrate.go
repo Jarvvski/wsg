@@ -72,6 +72,17 @@ func saveDispatchGroup(path string, dg *DispatchGroup) error {
 	return os.Rename(tmp, path)
 }
 
+func syncExistingGroup(r *RepoContext, dgFile string) *DispatchGroup {
+	dg, err := loadDispatchGroup(dgFile)
+	if err != nil {
+		return nil
+	}
+	syncGroupFromWorkers(r, dg)
+	revalidateBranches(r, dg)
+	saveDispatchGroup(dgFile, dg)
+	return dg
+}
+
 // ── DAG operations ─────────────────────────────────────────────────
 
 func readyToDispatch(dg *DispatchGroup) []string {
@@ -147,7 +158,12 @@ func syncGroupFromWorkers(r *RepoContext, dg *DispatchGroup) bool {
 
 func resetWorkerForReuse(r *RepoContext, worker string) {
 	sf := r.workerStateFile(worker)
-	saveWorkerState(sf, newIdleWorkerState())
+	ws, err := loadWorkerState(sf)
+	if err != nil {
+		ws = newIdleWorkerState()
+	}
+	ws.Reset()
+	saveWorkerState(sf, ws)
 	wspath := r.workerDir(worker)
 	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 		startBackground(wspath, os.DevNull, "sh", "-c", "jj restore 2>/dev/null; jj new main 2>/dev/null")
@@ -632,10 +648,8 @@ func cmdOrchestrate(args []string) {
 	dgFile := dispatchGroupFile(r, parent)
 
 	var dg *DispatchGroup
-	if existing, err := loadDispatchGroup(dgFile); err == nil {
+	if existing := syncExistingGroup(r, dgFile); existing != nil {
 		dg = existing
-		syncGroupFromWorkers(r, dg)
-		revalidateBranches(r, dg)
 	} else {
 		dg, err = buildDependencyGraph(r, parent, &opts)
 		if err != nil {

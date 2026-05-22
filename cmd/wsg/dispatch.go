@@ -9,6 +9,45 @@ import (
 	"strings"
 )
 
+type claudeInvocation struct {
+	Model        string
+	Budget       string
+	SessionID    string
+	Name         string
+	SystemPrompt string
+	Prompt       string
+}
+
+func (c *claudeInvocation) Args() []string {
+	args := []string{"-p"}
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+	if c.SessionID != "" {
+		args = append(args, "--resume", c.SessionID, "--fork-session")
+	}
+	args = append(args, "--max-budget-usd", c.Budget)
+	args = append(args, "--output-format", "stream-json", "--verbose")
+	if c.Name != "" {
+		args = append(args, "--name", c.Name)
+	}
+	if c.SystemPrompt != "" && c.SessionID == "" {
+		args = append(args, "--append-system-prompt", c.SystemPrompt)
+	}
+	args = append(args, c.Prompt)
+	return args
+}
+
+func sendSystemPrompt(repo string) string {
+	return fmt.Sprintf(`You are an autonomous agent in a jj (Jujutsu VCS) workspace.
+
+CRITICAL RULES:
+- Use jj commands, NEVER git commands.
+- The gh CLI requires: gh -R %s pr create ...
+- To push your work: jj git push --named <branch>=@
+- Do NOT ask questions. Make reasonable decisions and proceed.`, repo)
+}
+
 type DispatchOpts struct {
 	TicketID      string
 	Foreground    bool
@@ -77,10 +116,7 @@ func cmdDispatch(args []string) {
 
 	if len(tickets) == 1 && !opts.NoOrchestrate {
 		dgFile := dispatchGroupFile(r, tickets[0])
-		if dg, err := loadDispatchGroup(dgFile); err == nil {
-			syncGroupFromWorkers(r, dg)
-			revalidateBranches(r, dg)
-			saveDispatchGroup(dgFile, dg)
+		if dg := syncExistingGroup(r, dgFile); dg != nil {
 			printGroupStatus(dg)
 			if isGroupTerminal(dg) {
 				done, failed, skipped := countGroupStatuses(dg)
@@ -228,14 +264,8 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
 
 	sf := r.workerStateFile(worker)
-	now := nowUTC()
-	ws := &WorkerState{
-		Status:     "busy",
-		Ticket:     &opts.TicketID,
-		StartedAt:  &now,
-		LogFile:    &logFile,
-		BranchName: &ticketLower,
-	}
+	ws := newIdleWorkerState()
+	ws.MarkDispatched(opts.TicketID, logFile, ticketLower)
 	saveWorkerState(sf, ws)
 
 	systemPrompt := fmt.Sprintf(`You are an autonomous implementation agent in a jj (Jujutsu VCS) workspace.
@@ -296,69 +326,26 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
     - Use the Linear MCP save_comment tool to add a comment with: what was implemented, the PR URL, and any assumptions made`,
 		opts.TicketID, opts.TicketID, opts.TicketID, userEmail, branchPrefix, ticketLower, branchPrefix, opts.TicketID, prCreateCmd, opts.TicketID)
 
-	claudeArgs := []string{
-		"-p",
-		"--model", opts.Model,
-		"--max-budget-usd", opts.Budget,
-		"--output-format", "stream-json",
-		"--verbose",
-		"--name", fmt.Sprintf("pool:%s:%s", worker, opts.TicketID),
-		"--append-system-prompt", systemPrompt,
-		workerPrompt,
+	inv := claudeInvocation{
+		Model:        opts.Model,
+		Budget:       opts.Budget,
+		Name:         fmt.Sprintf("pool:%s:%s", worker, opts.TicketID),
+		SystemPrompt: systemPrompt,
+		Prompt:       workerPrompt,
 	}
+	claudeArgs := inv.Args()
 
 	info("Dispatching %s to %s...", opts.TicketID, worker)
 
+	fullArgs := append([]string{"claude"}, claudeArgs...)
 	if opts.Foreground {
-		exitCode, err := startForeground(wspath, logFile, "claude", claudeArgs...)
-		now := nowUTC()
-		if err != nil {
-			errMsg := err.Error()
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.Error = &errMsg
-			ec := 1
-			ws.ExitCode = &ec
-		} else if exitCode == 0 {
-			ws.Status = "done"
-			ws.CompletedAt = &now
-			ws.ExitCode = &exitCode
-		} else {
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.ExitCode = &exitCode
-		}
-		saveWorkerState(sf, ws)
+		runClaudeFG(wspath, logFile, sf, ws, fullArgs)
 	} else {
-		pid, err := startBackground(wspath, logFile, "claude", claudeArgs...)
+		pid, err := runClaudeBG(wspath, logFile, sf, ws, fullArgs)
 		if err != nil {
-			errMsg := err.Error()
-			now := nowUTC()
-			ws.Status = "failed"
-			ws.CompletedAt = &now
-			ws.Error = &errMsg
-			saveWorkerState(sf, ws)
 			fatal("Failed to start worker: %v", err)
 		}
-		ws.PID = &pid
-		saveWorkerState(sf, ws)
 		info("  %s (PID %d) -> %s", worker, pid, opts.TicketID)
-
-		go func() {
-			waitForProcess(pid)
-			ws, err := loadWorkerState(sf)
-			if err != nil {
-				return
-			}
-			now := nowUTC()
-			ws.CompletedAt = &now
-			if ws.Status == "busy" {
-				ws.Status = "done"
-				ec := 0
-				ws.ExitCode = &ec
-			}
-			saveWorkerState(sf, ws)
-		}()
 	}
 }
 
