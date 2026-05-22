@@ -50,3 +50,17 @@ After modifying, always run `make install` and verify:
 - `wsg status` - columns aligned, colors render on TTY
 - `wsg pool reset <worker>` - resets to idle
 - `wsg dispatch <TICKET> --fg` - launches claude agent in worker workspace
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `Jarvvski/wsg`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (one `CONTEXT.md` + `docs/adr/` at root). See `docs/agents/domain.md`.
