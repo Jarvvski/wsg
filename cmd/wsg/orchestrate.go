@@ -411,8 +411,9 @@ func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOp
 		needed := maxConc - idle
 		cfg, _ := loadPoolConfig(r.poolConfigFile())
 		newSize := cfg.Size + needed
-		info("Auto-expanding pool from %d to %d for wave parallelism", cfg.Size, newSize)
+		info("Auto-expanding pool from %d to %d for wave parallelism (%d idle, need %d)", cfg.Size, newSize, idle, maxConc)
 		cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
+		info("Pool ready: %d workers available", countIdleWorkers(r))
 	}
 
 	saveDispatchGroup(dgFile, dg)
