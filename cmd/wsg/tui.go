@@ -121,6 +121,17 @@ func (m tuiModel) Init() tea.Cmd {
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		switch m.view {
+		case viewInput:
+			var cmd tea.Cmd
+			m.textArea, cmd = m.textArea.Update(msg)
+			return m, cmd
+		case viewDispatch:
+			var cmd tea.Cmd
+			m.dispatchArea, cmd = m.dispatchArea.Update(msg)
+			return m, cmd
+		}
 	case tea.KeyPressMsg:
 		switch m.view {
 		case viewList:
@@ -927,7 +938,14 @@ func (m tuiModel) renderInput() string {
 
 func styleTextArea(ta *textarea.Model) {
 	s := ta.Styles()
-	s.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	white := lipgloss.Color("15")
+	dim := lipgloss.Color("245")
+	s.Focused.Text = lipgloss.NewStyle().Foreground(white)
+	s.Focused.CursorLine = lipgloss.NewStyle()
+	s.Focused.CursorLineNumber = lipgloss.NewStyle().Foreground(dim)
+	s.Focused.LineNumber = lipgloss.NewStyle().Foreground(dim)
+	s.Focused.Placeholder = lipgloss.NewStyle().Foreground(dim)
+	s.Focused.Prompt = lipgloss.NewStyle().Foreground(dim)
 	ta.SetStyles(s)
 }
 
