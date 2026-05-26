@@ -38,16 +38,6 @@ func (c *claudeInvocation) Args() []string {
 	return args
 }
 
-func sendSystemPrompt(repo string) string {
-	return fmt.Sprintf(`You are an autonomous agent in a jj (Jujutsu VCS) workspace.
-
-CRITICAL RULES:
-- Use jj commands, NEVER git commands.
-- The gh CLI requires: gh -R %s pr create ...
-- To push your work: jj git push --named <branch>=@
-- Do NOT ask questions. Make reasonable decisions and proceed.`, repo)
-}
-
 type DispatchOpts struct {
 	TicketID      string
 	Foreground    bool
@@ -266,65 +256,9 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	}
 	h.Dispatch(opts.TicketID, logFile, ticketLower)
 
-	systemPrompt := fmt.Sprintf(`You are an autonomous implementation agent in a jj (Jujutsu VCS) workspace.
-
-CRITICAL RULES:
-- Use jj commands, NEVER git commands.
-- The gh CLI requires: gh -R %s pr create ...
-- Branch naming: %s/%s-<short-description> (lowercase, hyphens, max 4 words from ticket title). Example: %s/amba-42-supplier-contact-sync
-- To push your work: jj git push --named <branch>=@
-- You have access to Linear MCP tools for fetching ticket details and updating status.
-- Do NOT ask questions. Make reasonable decisions and proceed.
-- If you encounter ambiguity, document your assumptions in the PR description.
-- Do NOT add a "Generated with Claude Code" footer or any AI attribution to PRs, commits, or comments.`, repo, branchPrefix, ticketLower, branchPrefix)
-
-	if depCtx != nil && depCtx.Context != "" {
-		systemPrompt += fmt.Sprintf(`
-
-STACKED BRANCH: Your workspace is based on prerequisite work:
-%s
-
-CRITICAL: Do NOT rebase onto main. Your changes build on top of the prerequisite branch(es).
-If you see merge conflict markers, resolve them before proceeding.`, depCtx.Context)
-	}
-
-	prCreateCmd := fmt.Sprintf(
-		`gh -R %s pr create --head <branch> --title "%s: <title from ticket>" --body "<summary of changes and link to Linear ticket>"`,
-		repo, opts.TicketID)
-	if depCtx != nil && depCtx.PRBase != "" {
-		prCreateCmd = fmt.Sprintf(
-			`gh -R %s pr create --head <branch> --base %s --title "%s: <title from ticket>" --body "<summary of changes and link to Linear ticket>"`,
-			repo, depCtx.PRBase, opts.TicketID)
-	}
-
-	workerPrompt := fmt.Sprintf(`Implement Linear ticket %s.
-
-1. Fetch the ticket: use the Linear MCP get_issue tool with id "%s". Read the full description.
-   The "Outcome" section defines your acceptance criteria - verify against it before finishing.
-
-2. Claim the ticket: use the Linear MCP save_issue tool with id "%s" to set state "In Progress" and assignee "%s".
-
-3. Derive a branch name from the ticket title in the format: %s/%s-<short-description>
-   Use lowercase, hyphens, max 4 words from the title. Example: %s/amba-42-supplier-contact-sync
-
-4. Read CLAUDE.md and relevant source files to understand the codebase and conventions.
-
-5. Implement using TDD: invoke the /tdd skill with the ticket requirements as context.
-   Let the skill drive the red-green-refactor loop until acceptance criteria are met.
-
-6. After /tdd completes, run the full check suite: linting, type checking, and all tests. Fix any issues.
-
-7. Describe your changes: jj describe -m "%s: <concise summary of what you implemented>"
-
-8. Push: jj git push --named <branch>=@
-
-9. Create a PR:
-   %s
-
-10. Update Linear:
-    - Use the Linear MCP save_issue tool to move %s to "Reviewable" state
-    - Use the Linear MCP save_comment tool to add a comment with: what was implemented, the PR URL, and any assumptions made`,
-		opts.TicketID, opts.TicketID, opts.TicketID, userEmail, branchPrefix, ticketLower, branchPrefix, opts.TicketID, prCreateCmd, opts.TicketID)
+	systemPrompt := buildDispatchSystemPrompt(repo, branchPrefix, ticketLower, depCtx)
+	prCreateCmd := buildPRCreateCmd(repo, opts.TicketID, depCtx)
+	workerPrompt := buildDispatchWorkerPrompt(opts.TicketID, userEmail, branchPrefix, ticketLower, prCreateCmd)
 
 	inv := claudeInvocation{
 		Model:        opts.Model,

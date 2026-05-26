@@ -250,63 +250,6 @@ func fetchFailingChecks(repo string, prNumber int) []ghCheck {
 	return failing
 }
 
-func buildReviewPrompt(repo string, prNumber int, prURL, branch string, failingChecks []ghCheck, hasConflicts bool) string {
-	var b strings.Builder
-	step := 1
-
-	header := fmt.Sprintf("#%d", prNumber)
-	if prURL != "" {
-		header = fmt.Sprintf("%s (#%d)", prURL, prNumber)
-	}
-	b.WriteString(fmt.Sprintf("Review and address feedback on PR %s.\n\n", header))
-
-	if hasConflicts {
-		b.WriteString(fmt.Sprintf("%d. This PR has merge conflicts. Rebase onto trunk and resolve them:\n", step))
-		b.WriteString("   jj rebase -d 'trunk()'\n")
-		b.WriteString("   Then resolve any conflict markers in the affected files.\n")
-		b.WriteString(fmt.Sprintf("   After resolving, push: jj git push --named %s=@\n\n", branch))
-		step++
-	}
-
-	b.WriteString(fmt.Sprintf("%d. Fetch all review comments: gh -R %s pr view %d --comments\n", step, repo, prNumber))
-	b.WriteString(fmt.Sprintf("   Also check inline review threads: gh api repos/%s/pulls/%d/comments --jq '.[] | {path, line, body, user: .user.login}'\n\n", repo, prNumber))
-	step++
-
-	b.WriteString(fmt.Sprintf("%d. For each unresolved comment:\n", step))
-	b.WriteString("   - Understand the reviewer's feedback\n")
-	b.WriteString("   - Make the requested change (or document why you disagree in the PR)\n")
-	b.WriteString("   - If a comment is unclear, make a reasonable judgment call\n\n")
-	step++
-
-	if len(failingChecks) > 0 {
-		b.WriteString(fmt.Sprintf("%d. Fix failing CI checks. These checks are FAILING:\n", step))
-		for _, c := range failingChecks {
-			b.WriteString(fmt.Sprintf("   - %s\n", c.Name))
-		}
-		b.WriteString("   Investigate and fix each failure:\n")
-		b.WriteString(fmt.Sprintf("   - List failed runs: gh -R %s run list --branch %s --status failure --json databaseId,name --limit 5\n", repo, branch))
-		b.WriteString(fmt.Sprintf("   - View failure logs: gh -R %s run view <run-id> --log-failed\n", repo))
-		b.WriteString("   - Fix the root cause in the code\n\n")
-		step++
-	}
-
-	suffix := ""
-	if len(failingChecks) > 0 {
-		suffix = " and CI failures"
-	}
-	b.WriteString(fmt.Sprintf("%d. After addressing all feedback%s, run checks: linting, type checking, and tests.\n\n", step, suffix))
-	step++
-
-	b.WriteString(fmt.Sprintf("%d. Describe and push:\n", step))
-	b.WriteString("   jj describe -m \"<ticket>: address review feedback\"\n")
-	b.WriteString(fmt.Sprintf("   jj git push --named %s=@\n\n", branch))
-	step++
-
-	b.WriteString(fmt.Sprintf("%d. Reply to the PR confirming what you addressed: gh -R %s pr comment %d --body \"<summary of changes made>\"", step, repo, prNumber))
-
-	return b.String()
-}
-
 func cmdMount(args []string) {
 	if len(args) == 0 {
 		fatal("Usage: wsg mount <worker>")
