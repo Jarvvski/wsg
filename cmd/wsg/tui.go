@@ -598,16 +598,10 @@ func (m tuiModel) doFetchAll() tea.Cmd {
 			"Use the Linear MCP list_issues tool to find issues with label '%s' that are in 'Todo' state for the Ameba team. Return ONLY the issue identifiers (e.g. AMBA-42) as a JSON array in this exact format: {\"tickets\": [\"AMBA-1\", \"AMBA-2\"]}",
 			label,
 		)
-		output, err := run(repo.Root, "claude", "-p",
-			"--model", "haiku",
-			"--max-budget-usd", "0.05",
-			"--output-format", "json",
-			"--no-session-persistence",
-			"--allowedTools=mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue",
-			prompt,
-		)
+		output, err := claudeQuery(repo.Root, prompt,
+			"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue", "0.05")
 		if err != nil {
-			return fetchAllResultMsg{err: fmt.Errorf("failed to fetch tickets: %v", err)}
+			return fetchAllResultMsg{err: err}
 		}
 		tickets := parseTicketResponse(output)
 		return fetchAllResultMsg{tickets: tickets}
