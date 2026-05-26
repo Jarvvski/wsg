@@ -41,8 +41,10 @@ type tuiModel struct {
 	workers  []tuiWorker
 	cursor   int
 	view     viewState
-	status   string
-	width    int
+	status       string
+	statusSetAt  time.Time
+	prevStatus   string
+	width        int
 	height   int
 	quitting bool
 
@@ -145,6 +147,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadWorkers()
 		if m.view == viewTail {
 			m.loadTailLines()
+		}
+		if m.view == viewList && m.status != defaultStatus {
+			if m.status != m.prevStatus {
+				m.statusSetAt = time.Now()
+				m.prevStatus = m.status
+			} else if time.Since(m.statusSetAt) >= 3*time.Second {
+				m.status = defaultStatus
+				m.statusSetAt = time.Time{}
+				m.prevStatus = ""
+			}
 		}
 		return m, tickCmd()
 	case rebaseResultMsg:
