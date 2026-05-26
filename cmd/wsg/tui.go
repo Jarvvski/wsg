@@ -28,7 +28,7 @@ const (
 	viewDispatch
 )
 
-const defaultStatus = "[n]ew  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [q]uit"
+const defaultStatus = "[n]ew  [N]all  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [q]uit"
 
 type tuiWorker struct {
 	name         string
@@ -171,6 +171,23 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = fmt.Sprintf("Review dispatched for %s", displayWorker(msg.worker))
 		}
+	case batchDispatchResultMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Batch dispatch failed: %v", msg.err)
+		} else {
+			m.status = fmt.Sprintf("Dispatched %d ticket(s): %s", msg.dispatched, strings.Join(msg.tickets, ", "))
+		}
+		m.loadWorkers()
+	case fetchAllResultMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Fetch failed: %v", msg.err)
+		} else if len(msg.tickets) == 0 {
+			m.status = "No ready-for-agent tickets found"
+		} else {
+			m.status = fmt.Sprintf("Dispatching %d ticket(s)...", len(msg.tickets))
+			m.loadWorkers()
+			return m, m.doDispatchBatch(msg.tickets)
+		}
 	case dispatchResultMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Dispatch failed: %v", msg.err)
@@ -302,7 +319,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.view = viewDispatch
 		ta := textarea.New()
-		ta.Placeholder = "AMBA-42"
+		ta.Placeholder = "AMBA-42 AMBA-43 ..."
 		ta.Focus()
 		styleTextArea(&ta)
 		ta.SetHeight(1)
@@ -312,8 +329,11 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			ta.SetWidth(76)
 		}
 		m.dispatchArea = ta
-		m.status = "Enter ticket ID, Enter to dispatch, Esc to cancel"
+		m.status = "Ticket ID(s) separated by spaces, Enter to dispatch, Esc to cancel"
 		return m, ta.Focus()
+	case "N":
+		m.status = "Fetching ready-for-agent tickets..."
+		return m, m.doFetchAll()
 	case "d":
 		w := m.selectedWorker()
 		if w == nil {
@@ -392,19 +412,41 @@ func (m tuiModel) updateDispatch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = defaultStatus
 		return m, nil
 	case "enter":
-		ticket := strings.TrimSpace(m.dispatchArea.Value())
-		if ticket == "" {
+		raw := strings.TrimSpace(m.dispatchArea.Value())
+		if raw == "" {
 			return m, nil
 		}
-		ticket = strings.ToUpper(ticket)
+		tickets := splitTickets(raw)
+		if len(tickets) == 0 {
+			return m, nil
+		}
 		m.view = viewList
-		m.status = fmt.Sprintf("Dispatching %s...", ticket)
-		return m, m.doDispatch(ticket)
+		if len(tickets) == 1 {
+			m.status = fmt.Sprintf("Dispatching %s...", tickets[0])
+			return m, m.doDispatch(tickets[0])
+		}
+		m.status = fmt.Sprintf("Dispatching %d tickets...", len(tickets))
+		return m, m.doDispatchBatch(tickets)
 	}
 
 	var cmd tea.Cmd
 	m.dispatchArea, cmd = m.dispatchArea.Update(msg)
 	return m, cmd
+}
+
+func splitTickets(raw string) []string {
+	raw = strings.ToUpper(raw)
+	raw = strings.ReplaceAll(raw, ",", " ")
+	fields := strings.Fields(raw)
+	seen := make(map[string]bool)
+	var result []string
+	for _, f := range fields {
+		if !seen[f] {
+			seen[f] = true
+			result = append(result, f)
+		}
+	}
+	return result
 }
 
 // ── Commands ───────────────────────────────────────────────────────
@@ -416,6 +458,17 @@ type dispatchResultMsg struct {
 	backgrounded  bool
 	subIssueCount int
 	err           error
+}
+
+type batchDispatchResultMsg struct {
+	tickets    []string
+	dispatched int
+	err        error
+}
+
+type fetchAllResultMsg struct {
+	tickets []string
+	err     error
 }
 
 type rebaseResultMsg struct {
@@ -501,6 +554,58 @@ func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 			return sendResultMsg{worker: workerName, err: err}
 		}
 		return sendResultMsg{worker: workerName}
+	}
+}
+
+func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
+	repo := m.repo
+	return func() tea.Msg {
+		dispatched := 0
+		for _, ticket := range tickets {
+			opts := &DispatchOpts{
+				TicketID: ticket,
+				Model:    "opus",
+				Budget:   "20",
+			}
+			dgFile := dispatchGroupFile(repo, ticket)
+			if dg := syncExistingGroup(repo, dgFile); dg != nil {
+				if !isGroupTerminal(dg) {
+					spawnOrchestrator(repo, ticket, opts)
+				}
+				dispatched++
+				continue
+			}
+			spawnOrchestrator(repo, ticket, opts)
+			dispatched++
+		}
+		return batchDispatchResultMsg{
+			tickets:    tickets,
+			dispatched: dispatched,
+		}
+	}
+}
+
+func (m tuiModel) doFetchAll() tea.Cmd {
+	repo := m.repo
+	return func() tea.Msg {
+		label := "ready-for-agent"
+		prompt := fmt.Sprintf(
+			"Use the Linear MCP list_issues tool to find issues with label '%s' that are in 'Todo' state for the Ameba team. Return ONLY the issue identifiers (e.g. AMBA-42) as a JSON array in this exact format: {\"tickets\": [\"AMBA-1\", \"AMBA-2\"]}",
+			label,
+		)
+		output, err := run(repo.Root, "claude", "-p",
+			"--model", "haiku",
+			"--max-budget-usd", "0.05",
+			"--output-format", "json",
+			"--no-session-persistence",
+			"--allowedTools=mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue",
+			prompt,
+		)
+		if err != nil {
+			return fetchAllResultMsg{err: fmt.Errorf("failed to fetch tickets: %v", err)}
+		}
+		tickets := parseTicketResponse(output)
+		return fetchAllResultMsg{tickets: tickets}
 	}
 }
 
@@ -681,7 +786,7 @@ func styleTextArea(ta *textarea.Model) {
 func (m tuiModel) renderDispatch() string {
 	var b strings.Builder
 
-	b.WriteString("Dispatch ticket:\n\n")
+	b.WriteString("Dispatch ticket(s):\n\n")
 	b.WriteString(m.dispatchArea.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.status)

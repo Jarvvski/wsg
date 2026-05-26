@@ -491,6 +491,68 @@ func TestTUINoPoolQuitsImmediately(t *testing.T) {
 }
 
 // Ensure the model loads workers in the order from pool config
+func TestSplitTickets(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"AMBA-42", []string{"AMBA-42"}},
+		{"amba-42", []string{"AMBA-42"}},
+		{"AMBA-42 AMBA-43", []string{"AMBA-42", "AMBA-43"}},
+		{"AMBA-42, AMBA-43", []string{"AMBA-42", "AMBA-43"}},
+		{"AMBA-42,AMBA-43,AMBA-44", []string{"AMBA-42", "AMBA-43", "AMBA-44"}},
+		{"  AMBA-42  AMBA-43  ", []string{"AMBA-42", "AMBA-43"}},
+		{"AMBA-42 AMBA-42", []string{"AMBA-42"}},
+		{"", nil},
+		{"  ", nil},
+	}
+
+	for _, tt := range tests {
+		got := splitTickets(tt.input)
+		if len(got) != len(tt.want) {
+			t.Errorf("splitTickets(%q) = %v, want %v", tt.input, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("splitTickets(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+			}
+		}
+	}
+}
+
+func TestTUIDispatchAllKeybind(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, cmd := m.Update(keyPress('N'))
+	m = updated.(tuiModel)
+
+	if !strings.Contains(m.status, "Fetching") {
+		t.Errorf("expected fetching status, got: %q", m.status)
+	}
+	if cmd == nil {
+		t.Error("expected a command to be returned for fetch-all")
+	}
+}
+
+func TestTUIDispatchPlaceholderShowsMultiple(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('n'))
+	m = updated.(tuiModel)
+
+	view := m.renderDispatch()
+	if !strings.Contains(view, "ticket(s)") {
+		t.Errorf("dispatch view should mention ticket(s), got:\n%s", view)
+	}
+}
+
 func TestTUIModelLoadsFromDisk(t *testing.T) {
 	dir := t.TempDir()
 	poolDir := filepath.Join(dir, ".jj", "pool")
