@@ -534,7 +534,7 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 		}
 		_, err = resumeWorker(repo, name, resumeOpts{
 			Prompt: prompt,
-			Budget: "5",
+			Budget: "10",
 		})
 		if err != nil {
 			return reviewResultMsg{worker: name, err: err}
