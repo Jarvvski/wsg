@@ -570,12 +570,16 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 			dgFile := dispatchGroupFile(repo, ticket)
 			if dg := syncExistingGroup(repo, dgFile); dg != nil {
 				if !isGroupTerminal(dg) {
-					spawnOrchestrator(repo, ticket, opts)
+					if err := spawnOrchestrator(repo, ticket, opts); err != nil {
+						return batchDispatchResultMsg{err: fmt.Errorf("orchestrate %s: %v", ticket, err)}
+					}
 				}
 				dispatched++
 				continue
 			}
-			spawnOrchestrator(repo, ticket, opts)
+			if err := spawnOrchestrator(repo, ticket, opts); err != nil {
+				return batchDispatchResultMsg{err: fmt.Errorf("orchestrate %s: %v", ticket, err)}
+			}
 			dispatched++
 		}
 		return batchDispatchResultMsg{
@@ -618,11 +622,12 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 			Budget:   "20",
 		}
 
-		// Resume existing orchestration (file I/O only, fast)
 		dgFile := dispatchGroupFile(repo, ticket)
 		if dg := syncExistingGroup(repo, dgFile); dg != nil {
 			if !isGroupTerminal(dg) {
-				spawnOrchestrator(repo, ticket, opts)
+				if err := spawnOrchestrator(repo, ticket, opts); err != nil {
+					return dispatchResultMsg{ticket: ticket, err: err}
+				}
 			}
 			return dispatchResultMsg{
 				ticket:        ticket,
@@ -631,9 +636,9 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 			}
 		}
 
-		// Spawn background orchestrator - handles both sub-issue detection
-		// and single-ticket fallback without blocking the TUI
-		spawnOrchestrator(repo, ticket, opts)
+		if err := spawnOrchestrator(repo, ticket, opts); err != nil {
+			return dispatchResultMsg{ticket: ticket, err: err}
+		}
 		return dispatchResultMsg{ticket: ticket, backgrounded: true}
 	}
 }

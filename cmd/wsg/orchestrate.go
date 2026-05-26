@@ -611,23 +611,28 @@ func tryOrchestrate(r *RepoContext, ticket string, opts *DispatchOpts) {
 			done, failed, skipped := countGroupStatuses(dg)
 			info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
 		} else {
-			spawnOrchestrator(r, ticket, opts)
+			spawnOrchestratorCLI(r, ticket, opts)
 		}
 		return
 	}
-	spawnOrchestrator(r, ticket, opts)
+	spawnOrchestratorCLI(r, ticket, opts)
 }
 
 // ── Background orchestration ───────────────────────────────────────
 
-func spawnOrchestrator(r *RepoContext, parent string, opts *DispatchOpts) {
+func spawnOrchestrator(r *RepoContext, parent string, opts *DispatchOpts) error {
 	logFile := filepath.Join(r.poolDir(), "dispatch-"+strings.ToLower(parent)+".log")
-	pid, err := startBackground(r.Root, logFile, "wsg", "__orchestrate", parent,
+	_, err := startBackground(r.Root, logFile, "wsg", "__orchestrate", parent,
 		"--model", opts.Model, "--budget", opts.Budget)
-	if err != nil {
+	return err
+}
+
+func spawnOrchestratorCLI(r *RepoContext, parent string, opts *DispatchOpts) {
+	if err := spawnOrchestrator(r, parent, opts); err != nil {
 		fatal("Failed to start orchestrator: %v", err)
 	}
-	info("Orchestrating %s in background (PID %d)", parent, pid)
+	logFile := filepath.Join(r.poolDir(), "dispatch-"+strings.ToLower(parent)+".log")
+	info("Orchestrating %s in background", parent)
 	info("  Log: %s", logFile)
 	info("  Re-run 'wsg dispatch %s' to check progress", parent)
 }
