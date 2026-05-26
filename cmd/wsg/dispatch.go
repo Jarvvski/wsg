@@ -61,7 +61,7 @@ type DispatchOpts struct {
 func cmdDispatch(args []string) {
 	opts := DispatchOpts{
 		Model:  "opus",
-		Budget: "20",
+		Budget: "30",
 		Label:  "ready-for-agent",
 	}
 

@@ -62,7 +62,7 @@ func cmdSend(args []string) {
 
 	var worker, prompt string
 	var fgFlag *bool
-	budget := "5"
+	budget := "10"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -121,7 +121,7 @@ func cmdReview(args []string) {
 
 	var worker string
 	var fgFlag *bool
-	budget := "5"
+	budget := "10"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {

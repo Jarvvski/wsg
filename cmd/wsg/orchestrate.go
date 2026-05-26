@@ -640,7 +640,7 @@ func cmdOrchestrate(args []string) {
 	parent := args[0]
 	opts := DispatchOpts{
 		Model:  "opus",
-		Budget: "20",
+		Budget: "30",
 	}
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
