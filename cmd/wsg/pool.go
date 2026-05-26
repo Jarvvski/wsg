@@ -204,41 +204,73 @@ func saveWorkerState(path string, ws *WorkerState) error {
 	return os.Rename(tmp, path)
 }
 
-func checkWorkerLiveness(r *RepoContext, worker string) {
-	h, err := OpenWorker(r.workerStateFile(worker))
-	if err != nil {
+func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
+	ws := h.state
+	if ws.Status != "busy" || ws.PID == nil {
 		return
 	}
-	ws := h.State()
-	if ws.Status == "busy" && ws.PID != nil {
-		if !processAlive(*ws.PID) {
-			if ws.LogFile != nil {
-				if result := readLogResult(*ws.LogFile); result != nil {
-					if result.Status == "done" {
-						ec := 0
-						if result.ExitCode != nil {
-							ec = *result.ExitCode
-						}
-						h.Done(ec)
-						resolveWorkerBranch(r, worker, ws)
-						h.save()
-					} else {
-						ec := 1
-						if result.ExitCode != nil {
-							ec = *result.ExitCode
-						}
-						errMsg := ""
-						if result.Error != nil {
-							errMsg = *result.Error
-						}
-						h.Failed(ec, errMsg)
-					}
-					return
+	if processAlive(*ws.PID) {
+		return
+	}
+	if ws.LogFile != nil {
+		if result := readLogResult(*ws.LogFile); result != nil {
+			if result.Status == "done" {
+				ec := 0
+				if result.ExitCode != nil {
+					ec = *result.ExitCode
 				}
+				h.Done(ec)
+				resolveWorkerBranch(r, worker, ws)
+				h.save()
+			} else {
+				ec := 1
+				if result.ExitCode != nil {
+					ec = *result.ExitCode
+				}
+				errMsg := ""
+				if result.Error != nil {
+					errMsg = *result.Error
+				}
+				h.Failed(ec, errMsg)
 			}
-			h.Failed(1, "Process exited unexpectedly")
+			return
 		}
 	}
+	h.Failed(1, "Process exited unexpectedly")
+}
+
+func (h *WorkerHandle) RunFG(wspath, logFile string, claudeArgs []string) {
+	exitCode, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
+	if err != nil {
+		h.Failed(1, err.Error())
+	} else if exitCode == 0 {
+		h.Done(exitCode)
+	} else {
+		h.Failed(exitCode, "")
+	}
+}
+
+func (h *WorkerHandle) RunBG(wspath, logFile string, claudeArgs []string) (int, error) {
+	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
+	if err != nil {
+		h.Failed(1, err.Error())
+		return 0, err
+	}
+	h.SetPID(pid)
+
+	path := h.path
+	go func() {
+		waitForProcess(pid)
+		h, err := OpenWorker(path)
+		if err != nil {
+			return
+		}
+		if h.State().Status == "busy" {
+			h.Done(0)
+		}
+	}()
+
+	return pid, nil
 }
 
 func resolveWorkerBranch(r *RepoContext, worker string, ws *WorkerState) {
@@ -471,13 +503,13 @@ func cmdPoolResize(args []string) {
 			idleNames = append(idleNames, name)
 			continue
 		}
-		checkWorkerLiveness(r, name)
-		ws, err := loadWorkerState(sf)
+		h, err := OpenWorker(sf)
 		if err != nil {
 			idleNames = append(idleNames, name)
 			continue
 		}
-		if ws.Status == "idle" || ws.Status == "done" || ws.Status == "failed" {
+		h.CheckLiveness(r, name)
+		if h.State().Status == "idle" || h.State().Status == "done" || h.State().Status == "failed" {
 			idleNames = append(idleNames, name)
 		} else {
 			nonIdle++
@@ -536,13 +568,12 @@ func cmdPoolList() {
 
 	for _, worker := range cfg.Workers {
 		sf := r.workerStateFile(worker)
-		ws, err := loadWorkerState(sf)
+		h, err := OpenWorker(sf)
 		if err != nil {
 			continue
 		}
-		checkWorkerLiveness(r, worker)
-		// Reload after liveness check
-		ws, _ = loadWorkerState(sf)
+		h.CheckLiveness(r, worker)
+		ws := h.State()
 
 		ticket := "-"
 		if ws.Ticket != nil {
@@ -638,10 +669,9 @@ func cmdPoolRm(args []string) {
 
 	poolDir := r.poolDir()
 	sf := filepath.Join(poolDir, worker+".json")
-	if ws, err := loadWorkerState(sf); err == nil {
-		checkWorkerLiveness(r, worker)
-		ws, _ = loadWorkerState(sf)
-		if ws.Status == "busy" {
+	if h, err := OpenWorker(sf); err == nil {
+		h.CheckLiveness(r, worker)
+		if h.State().Status == "busy" {
 			fatal("Worker %s is busy. Reset it first: wsg pool reset %s", worker, worker)
 		}
 	}

@@ -17,7 +17,7 @@ func TestRunClaudeFGSuccess(t *testing.T) {
 	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
 
 	logFile := filepath.Join(dir, "test.log")
-	runClaudeFG(dir, logFile, h, []string{"true"})
+	h.RunFG(dir, logFile, []string{"true"})
 
 	if h.State().Status != "done" {
 		t.Errorf("status = %q, want done", h.State().Status)
@@ -40,7 +40,7 @@ func TestRunClaudeFGFailure(t *testing.T) {
 	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
 
 	logFile := filepath.Join(dir, "test.log")
-	runClaudeFG(dir, logFile, h, []string{"false"})
+	h.RunFG(dir, logFile, []string{"false"})
 
 	if h.State().Status != "failed" {
 		t.Errorf("status = %q, want failed", h.State().Status)
@@ -60,7 +60,7 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
 
 	logFile := filepath.Join(dir, "test.log")
-	pid, err := runClaudeBG(dir, logFile, h, []string{"true"})
+	pid, err := h.RunBG(dir, logFile, []string{"true"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

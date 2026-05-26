@@ -49,10 +49,10 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 
 	fullArgs := append([]string{"claude"}, inv.Args()...)
 	if opts.Foreground {
-		runClaudeFG(wspath, logFile, h, fullArgs)
+		h.RunFG(wspath, logFile, fullArgs)
 		return 0, nil
 	}
-	return runClaudeBG(wspath, logFile, h, fullArgs)
+	return h.RunBG(wspath, logFile, fullArgs)
 }
 
 func cmdSend(args []string) {

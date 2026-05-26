@@ -100,38 +100,12 @@ func startForeground(dir string, logFile string, name string, args ...string) (i
 	return exitCode, nil
 }
 
-func runClaudeFG(wspath, logFile string, h *WorkerHandle, claudeArgs []string) {
-	exitCode, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
+func waitForProcess(pid int) {
+	proc, err := os.FindProcess(pid)
 	if err != nil {
-		h.Failed(1, err.Error())
-	} else if exitCode == 0 {
-		h.Done(exitCode)
-	} else {
-		h.Failed(exitCode, "")
+		return
 	}
-}
-
-func runClaudeBG(wspath, logFile string, h *WorkerHandle, claudeArgs []string) (int, error) {
-	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
-	if err != nil {
-		h.Failed(1, err.Error())
-		return 0, err
-	}
-	h.SetPID(pid)
-
-	path := h.path
-	go func() {
-		waitForProcess(pid)
-		h, err := OpenWorker(path)
-		if err != nil {
-			return
-		}
-		if h.State().Status == "busy" {
-			h.Done(0)
-		}
-	}()
-
-	return pid, nil
+	proc.Wait()
 }
 
 func jjConfigGet(dir string, key string) (string, error) {

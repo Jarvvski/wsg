@@ -339,22 +339,14 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
 
 	fullArgs := append([]string{"claude"}, claudeArgs...)
 	if opts.Foreground {
-		runClaudeFG(wspath, logFile, h, fullArgs)
+		h.RunFG(wspath, logFile, fullArgs)
 	} else {
-		pid, err := runClaudeBG(wspath, logFile, h, fullArgs)
+		pid, err := h.RunBG(wspath, logFile, fullArgs)
 		if err != nil {
 			fatal("Failed to start worker: %v", err)
 		}
 		info("  %s (PID %d) -> %s", worker, pid, opts.TicketID)
 	}
-}
-
-func waitForProcess(pid int) {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return
-	}
-	proc.Wait()
 }
 
 func cmdLogs(args []string) {
