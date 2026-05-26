@@ -283,30 +283,11 @@ Rules:
 
 	info("Building dependency graph for %s...", parent)
 
-	output, stderr, err := runCapture(r.Root, "claude", "-p",
-		"--model", "haiku",
-		"--max-budget-usd", "0.50",
-		"--output-format", "json",
-		"--no-session-persistence",
-		"--allowedTools=mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue",
-		prompt,
-	)
+	output, err := claudeQuery(r.Root, prompt,
+		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue", "0.50")
 	if err != nil {
-		diag := stderr
-		if diag == "" {
-			diag = output
-		}
-		return nil, fmt.Errorf("claude failed: %s", diag)
+		return nil, err
 	}
-
-	var wrapper struct {
-		Result string `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(output), &wrapper); err == nil && wrapper.Result != "" {
-		output = wrapper.Result
-	}
-
-	output = extractJSON(output)
 
 	var graphResp struct {
 		SubIssues map[string]struct {

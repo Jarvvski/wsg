@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -106,6 +107,35 @@ func waitForProcess(pid int) {
 		return
 	}
 	proc.Wait()
+}
+
+func claudeQuery(dir, prompt, allowedTools, budget string) (string, error) {
+	output, stderr, err := runCapture(dir, "claude", "-p",
+		"--model", "haiku",
+		"--max-budget-usd", budget,
+		"--output-format", "json",
+		"--no-session-persistence",
+		"--allowedTools="+allowedTools,
+		prompt,
+	)
+	if err != nil {
+		diag := stderr
+		if diag == "" {
+			diag = output
+		}
+		return "", fmt.Errorf("claude failed: %s", diag)
+	}
+	return unwrapClaudeJSON(output), nil
+}
+
+func unwrapClaudeJSON(output string) string {
+	var wrapper struct {
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(output), &wrapper); err == nil && wrapper.Result != "" {
+		output = wrapper.Result
+	}
+	return extractJSON(output)
 }
 
 func jjConfigGet(dir string, key string) (string, error) {

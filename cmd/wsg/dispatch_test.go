@@ -164,11 +164,6 @@ func TestParseTicketResponse(t *testing.T) {
 			want:  []string{"AMBA-1", "AMBA-2", "AMBA-3"},
 		},
 		{
-			name:  "wrapped in result",
-			input: `{"result": "{\"tickets\": [\"AMBA-42\"]}"}`,
-			want:  []string{"AMBA-42"},
-		},
-		{
 			name:  "empty tickets",
 			input: `{"tickets": []}`,
 			want:  nil,

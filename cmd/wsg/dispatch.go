@@ -160,14 +160,8 @@ func dispatchAll(opts *DispatchOpts) {
 		opts.Label,
 	)
 
-	output, err := run(r.Root, "claude", "-p",
-		"--model", "haiku",
-		"--max-budget-usd", "0.05",
-		"--output-format", "json",
-		"--no-session-persistence",
-		"--allowedTools=mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue",
-		prompt,
-	)
+	output, err := claudeQuery(r.Root, prompt,
+		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue", "0.05")
 	if err != nil {
 		fatal("Failed to fetch tickets: %v", err)
 	}
@@ -204,13 +198,6 @@ func dispatchAll(opts *DispatchOpts) {
 }
 
 func parseTicketResponse(output string) []string {
-	// Claude --output-format json wraps in {"result": "..."}
-	var wrapper struct {
-		Result string `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(output), &wrapper); err == nil && wrapper.Result != "" {
-		output = wrapper.Result
-	}
 	var payload struct {
 		Tickets []string `json:"tickets"`
 	}
