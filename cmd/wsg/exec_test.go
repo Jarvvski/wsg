@@ -56,11 +56,13 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 	os.MkdirAll(poolDir, 0755)
 
 	sf := filepath.Join(poolDir, "worker-1.json")
+	logFile := filepath.Join(poolDir, "worker-1.log")
 	h, _ := CreateIdleWorker(sf)
-	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
+	h.Dispatch("AMBA-42", logFile, "amba-42")
 
-	logFile := filepath.Join(dir, "test.log")
-	pid, err := h.RunBG(dir, logFile, []string{"true"})
+	r := &RepoContext{Root: dir}
+	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"success","is_error":false}'`}
+	pid, err := h.RunBG(r, "worker-1", dir, logFile, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,19 +70,56 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 		t.Errorf("pid = %d, want > 0", pid)
 	}
 
-	// Wait for background goroutine to complete
+	loaded := awaitTerminal(t, sf)
+	if loaded.Status != "done" {
+		t.Errorf("status = %q, want done", loaded.Status)
+	}
+	if loaded.ExitCode == nil || *loaded.ExitCode != 0 {
+		t.Errorf("exitCode = %v, want 0", loaded.ExitCode)
+	}
+}
+
+// TestRunClaudeBGFailure covers the budget-exceeded case: the CLI exits 0 but
+// reports is_error in its final result event. The worker must land on failed,
+// not done, with the reported subtype as the error.
+func TestRunClaudeBGFailure(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	os.MkdirAll(poolDir, 0755)
+
+	sf := filepath.Join(poolDir, "worker-1.json")
+	logFile := filepath.Join(poolDir, "worker-1.log")
+	h, _ := CreateIdleWorker(sf)
+	h.Dispatch("AMBA-42", logFile, "amba-42")
+
+	r := &RepoContext{Root: dir}
+	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"error_max_budget_usd","is_error":true}'`}
+	if _, err := h.RunBG(r, "worker-1", dir, logFile, cmd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	loaded := awaitTerminal(t, sf)
+	if loaded.Status != "failed" {
+		t.Errorf("status = %q, want failed", loaded.Status)
+	}
+	if loaded.Error == nil || *loaded.Error != "error_max_budget_usd" {
+		t.Errorf("error = %v, want error_max_budget_usd", loaded.Error)
+	}
+}
+
+// awaitTerminal polls a worker state file until it leaves the busy state.
+func awaitTerminal(t *testing.T, sf string) *WorkerState {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		loaded, _ := loadWorkerState(sf)
-		if loaded.Status != "busy" {
-			if loaded.Status != "done" {
-				t.Errorf("status = %q, want done", loaded.Status)
-			}
-			return
+		if loaded != nil && loaded.Status != "busy" {
+			return loaded
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Error("timed out waiting for background completion")
+	t.Fatal("timed out waiting for background completion")
+	return nil
 }
 
 func TestUnwrapClaudeJSON(t *testing.T) {

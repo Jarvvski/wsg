@@ -212,6 +212,16 @@ func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
 	if processAlive(*ws.PID) {
 		return
 	}
+	h.finalizeFromLog(r, worker)
+}
+
+// finalizeFromLog transitions a busy worker to its terminal state from the
+// agent's stream-json log: done (with the logged exit code and resolved branch)
+// on a success result, failed otherwise - including a budget-exceeded run, which
+// the CLI reports as is_error even though the process itself exits 0. A missing
+// or unparseable result means the process died without reporting, also a failure.
+func (h *WorkerHandle) finalizeFromLog(r *RepoContext, worker string) {
+	ws := h.state
 	if ws.LogFile != nil {
 		if result := readLogResult(*ws.LogFile); result != nil {
 			if result.Status == "done" {
@@ -250,7 +260,7 @@ func (h *WorkerHandle) RunFG(wspath, logFile string, claudeArgs []string) {
 	}
 }
 
-func (h *WorkerHandle) RunBG(wspath, logFile string, claudeArgs []string) (int, error) {
+func (h *WorkerHandle) RunBG(r *RepoContext, worker, wspath, logFile string, claudeArgs []string) (int, error) {
 	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
 	if err != nil {
 		h.Failed(1, err.Error())
@@ -266,7 +276,7 @@ func (h *WorkerHandle) RunBG(wspath, logFile string, claudeArgs []string) (int, 
 			return
 		}
 		if h.State().Status == "busy" {
-			h.Done(0)
+			h.finalizeFromLog(r, worker)
 		}
 	}()
 

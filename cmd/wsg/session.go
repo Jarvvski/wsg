@@ -52,7 +52,7 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 		h.RunFG(wspath, logFile, fullArgs)
 		return 0, nil
 	}
-	return h.RunBG(wspath, logFile, fullArgs)
+	return h.RunBG(r, worker, wspath, logFile, fullArgs)
 }
 
 func cmdSend(args []string) {

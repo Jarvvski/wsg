@@ -262,7 +262,7 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	if opts.Foreground {
 		h.RunFG(wspath, logFile, fullArgs)
 	} else {
-		pid, err := h.RunBG(wspath, logFile, fullArgs)
+		pid, err := h.RunBG(r, worker, wspath, logFile, fullArgs)
 		if err != nil {
 			fatal("Failed to start worker: %v", err)
 		}
