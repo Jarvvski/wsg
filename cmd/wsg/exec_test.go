@@ -79,8 +79,8 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 	}
 }
 
-// TestRunClaudeBGFailure covers the budget-exceeded case: the CLI exits 0 but
-// reports is_error in its final result event. The worker must land on failed,
+// TestRunClaudeBGFailure covers a run that exits 0 but reports is_error in its
+// final result event (e.g. an execution error). The worker must land on failed,
 // not done, with the reported subtype as the error.
 func TestRunClaudeBGFailure(t *testing.T) {
 	dir := t.TempDir()
@@ -93,7 +93,7 @@ func TestRunClaudeBGFailure(t *testing.T) {
 	h.Dispatch("AMBA-42", logFile, "amba-42")
 
 	r := &RepoContext{Root: dir}
-	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"error_max_budget_usd","is_error":true}'`}
+	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"error_during_execution","is_error":true}'`}
 	if _, err := h.RunBG(r, "worker-1", dir, logFile, cmd); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,8 +102,8 @@ func TestRunClaudeBGFailure(t *testing.T) {
 	if loaded.Status != "failed" {
 		t.Errorf("status = %q, want failed", loaded.Status)
 	}
-	if loaded.Error == nil || *loaded.Error != "error_max_budget_usd" {
-		t.Errorf("error = %v, want error_max_budget_usd", loaded.Error)
+	if loaded.Error == nil || *loaded.Error != "error_during_execution" {
+		t.Errorf("error = %v, want error_during_execution", loaded.Error)
 	}
 }
 

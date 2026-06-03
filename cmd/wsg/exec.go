@@ -109,10 +109,9 @@ func waitForProcess(pid int) {
 	proc.Wait()
 }
 
-func claudeQuery(dir, prompt, allowedTools, budget string) (string, error) {
+func claudeQuery(dir, prompt, allowedTools string) (string, error) {
 	output, stderr, err := runCapture(dir, "claude", "-p",
 		"--model", "haiku",
-		"--max-budget-usd", budget,
 		"--output-format", "json",
 		"--no-session-persistence",
 		"--allowedTools="+allowedTools,

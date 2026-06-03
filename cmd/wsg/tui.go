@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -49,9 +50,11 @@ type tuiModel struct {
 	quitting bool
 
 	// tail view state
-	tailWorker string
-	tailLines  []string
-	tailOffset int64
+	tailWorker    string
+	tailLines     []string
+	tailOffset    int64
+	tailViewport  viewport.Model
+	tailFollowing bool
 
 	// input view state
 	inputWorker string
@@ -225,9 +228,33 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.resizeTailViewport()
 	}
 	return m, nil
 }
+
+func (m *tuiModel) tailViewportSize() (int, int) {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	h := m.height - tailHeaderHeight
+	if h < 3 {
+		h = 3
+	}
+	return w, h
+}
+
+func (m *tuiModel) resizeTailViewport() {
+	w, h := m.tailViewportSize()
+	m.tailViewport.SetWidth(w)
+	m.tailViewport.SetHeight(h)
+	if m.tailFollowing {
+		m.tailViewport.GotoBottom()
+	}
+}
+
+const tailHeaderHeight = 4
 
 func (m tuiModel) selectedWorker() *tuiWorker {
 	if m.cursor >= 0 && m.cursor < len(m.workers) {
@@ -369,6 +396,11 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.tailWorker = w.name
 		m.tailLines = nil
 		m.tailOffset = 0
+		m.tailFollowing = true
+		vpW, vpH := m.tailViewportSize()
+		vp := viewport.New(viewport.WithWidth(vpW), viewport.WithHeight(vpH))
+		vp.SoftWrap = true
+		m.tailViewport = vp
 		m.loadTailLines()
 		return m, nil
 	}
@@ -380,8 +412,21 @@ func (m tuiModel) updateTail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "ctrl+c":
 		m.view = viewList
 		m.status = defaultStatus
+		return m, nil
+	case "G", "end":
+		m.tailViewport.GotoBottom()
+		m.tailFollowing = true
+		return m, nil
+	case "g", "home":
+		m.tailViewport.GotoTop()
+		m.tailFollowing = false
+		return m, nil
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.tailViewport, cmd = m.tailViewport.Update(msg)
+	m.tailFollowing = m.tailViewport.AtBottom()
+	return m, cmd
 }
 
 func (m tuiModel) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -534,7 +579,6 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 		}
 		_, err = resumeWorker(repo, name, resumeOpts{
 			Prompt: prompt,
-			Budget: "10",
 		})
 		if err != nil {
 			return reviewResultMsg{worker: name, err: err}
@@ -548,7 +592,6 @@ func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := resumeWorker(repo, workerName, resumeOpts{
 			Prompt:       prompt,
-			Budget:       "5",
 			SystemPrompt: sendSystemPrompt(ghRepo(repo)),
 		})
 		if err != nil {
@@ -566,7 +609,6 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 			opts := &DispatchOpts{
 				TicketID: ticket,
 				Model:    "opus",
-				Budget:   "20",
 			}
 			dgFile := dispatchGroupFile(repo, ticket)
 			if dg := syncExistingGroup(repo, dgFile); dg != nil {
@@ -599,7 +641,7 @@ func (m tuiModel) doFetchAll() tea.Cmd {
 			label,
 		)
 		output, err := claudeQuery(repo.Root, prompt,
-			"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue", "0.05")
+			"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue")
 		if err != nil {
 			return fetchAllResultMsg{err: err}
 		}
@@ -614,7 +656,6 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 		opts := &DispatchOpts{
 			TicketID: ticket,
 			Model:    "opus",
-			Budget:   "20",
 		}
 
 		dgFile := dispatchGroupFile(repo, ticket)
@@ -644,11 +685,18 @@ func (m *tuiModel) loadTailLines() {
 	for _, w := range m.workers {
 		if w.name == m.tailWorker && w.state.LogFile != nil {
 			lines, newOffset := readLogTail(*w.state.LogFile, m.tailOffset)
+			if len(lines) == 0 && m.tailOffset == newOffset {
+				return
+			}
 			m.tailLines = append(m.tailLines, lines...)
 			m.tailOffset = newOffset
-			maxLines := 200
+			maxLines := 5000
 			if len(m.tailLines) > maxLines {
 				m.tailLines = m.tailLines[len(m.tailLines)-maxLines:]
+			}
+			m.tailViewport.SetContent(strings.Join(m.tailLines, "\n"))
+			if m.tailFollowing {
+				m.tailViewport.GotoBottom()
 			}
 			return
 		}
@@ -735,26 +783,18 @@ func (m tuiModel) renderList() string {
 func (m tuiModel) renderTail() string {
 	var b strings.Builder
 
-	header := fmt.Sprintf("Tailing %s  [q/Esc to return]", displayWorker(m.tailWorker))
+	follow := "off"
+	if m.tailFollowing {
+		follow = "on"
+	}
+	pct := int(m.tailViewport.ScrollPercent() * 100)
+	header := fmt.Sprintf("Tailing %s  follow:%s  %d%%  [j/k scroll, g/G top/bottom, q return]",
+		displayWorker(m.tailWorker), follow, pct)
 	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("-", len(header)))
 	b.WriteString("\n\n")
-
-	visibleLines := 40
-	if m.height > 0 {
-		visibleLines = m.height - 5
-	}
-
-	start := 0
-	if len(m.tailLines) > visibleLines {
-		start = len(m.tailLines) - visibleLines
-	}
-
-	for _, line := range m.tailLines[start:] {
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
+	b.WriteString(m.tailViewport.View())
 
 	return b.String()
 }

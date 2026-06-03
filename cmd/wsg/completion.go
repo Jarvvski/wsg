@@ -216,21 +216,18 @@ _wsg() {
             '--all[dispatch all ready tickets]' \
             '--no-orchestrate[skip parent issue detection]' \
             '--model[model]:model:(sonnet opus haiku)' \
-            '--budget[max spend]:budget:' \
             '--label[label filter]:label:' \
             '*:ticket:'
           ;;
         send|s)
           _arguments \
             '--fg[run in foreground]' \
-            '--budget[max spend]:budget:' \
             '1:worker:__wsg_non_busy_workers' \
             '2:prompt:'
           ;;
         review|rev)
           _arguments \
             '--fg[run in foreground]' \
-            '--budget[max spend]:budget:' \
             '1:worker:__wsg_non_busy_workers'
           ;;
         mount|m)

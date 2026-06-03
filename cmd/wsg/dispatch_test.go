@@ -11,7 +11,6 @@ import (
 func TestClaudeArgsDispatch(t *testing.T) {
 	inv := claudeInvocation{
 		Model:        "opus",
-		Budget:       "20",
 		Name:         "pool:worker-abc:AMBA-42",
 		SystemPrompt: "you are an agent",
 		Prompt:       "implement the thing",
@@ -20,6 +19,9 @@ func TestClaudeArgsDispatch(t *testing.T) {
 
 	if args[0] != "-p" {
 		t.Errorf("first arg = %q, want -p", args[0])
+	}
+	if slices.Contains(args, "--max-budget-usd") {
+		t.Error("dispatch should not set a budget")
 	}
 	if !slices.Contains(args, "--model") {
 		t.Error("missing --model")
@@ -46,7 +48,6 @@ func TestClaudeArgsDispatch(t *testing.T) {
 
 func TestClaudeArgsResume(t *testing.T) {
 	inv := claudeInvocation{
-		Budget:    "5",
 		SessionID: "sess-abc-123",
 		Prompt:    "fix the tests",
 	}
@@ -74,7 +75,6 @@ func TestClaudeArgsResume(t *testing.T) {
 
 func TestClaudeArgsFreshSend(t *testing.T) {
 	inv := claudeInvocation{
-		Budget:       "5",
 		SystemPrompt: "you are an agent",
 		Prompt:       "do the thing",
 	}

@@ -11,7 +11,6 @@ import (
 
 type claudeInvocation struct {
 	Model        string
-	Budget       string
 	SessionID    string
 	Name         string
 	SystemPrompt string
@@ -26,7 +25,6 @@ func (c *claudeInvocation) Args() []string {
 	if c.SessionID != "" {
 		args = append(args, "--resume", c.SessionID, "--fork-session")
 	}
-	args = append(args, "--max-budget-usd", c.Budget)
 	args = append(args, "--output-format", "stream-json", "--verbose")
 	if c.Name != "" {
 		args = append(args, "--name", c.Name)
@@ -42,7 +40,6 @@ type DispatchOpts struct {
 	TicketID      string
 	Foreground    bool
 	Model         string
-	Budget        string
 	AllMode       bool
 	Label         string
 	NoOrchestrate bool
@@ -50,9 +47,8 @@ type DispatchOpts struct {
 
 func cmdDispatch(args []string) {
 	opts := DispatchOpts{
-		Model:  "opus",
-		Budget: "30",
-		Label:  "ready-for-agent",
+		Model: "opus",
+		Label: "ready-for-agent",
 	}
 
 	var tickets []string
@@ -68,11 +64,6 @@ func cmdDispatch(args []string) {
 		case "--model":
 			if i+1 < len(args) {
 				opts.Model = args[i+1]
-				i++
-			}
-		case "--budget":
-			if i+1 < len(args) {
-				opts.Budget = args[i+1]
 				i++
 			}
 		case "--all":
@@ -104,7 +95,7 @@ func cmdDispatch(args []string) {
 	}
 
 	if len(tickets) == 0 {
-		fatal("Usage: wsg dispatch <TICKET>... [--fg|--bg] [--model MODEL] [--budget USD]")
+		fatal("Usage: wsg dispatch <TICKET>... [--fg|--bg] [--model MODEL]")
 	}
 
 	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
@@ -161,7 +152,7 @@ func dispatchAll(opts *DispatchOpts) {
 	)
 
 	output, err := claudeQuery(r.Root, prompt,
-		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue", "0.05")
+		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue")
 	if err != nil {
 		fatal("Failed to fetch tickets: %v", err)
 	}
@@ -249,7 +240,6 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 
 	inv := claudeInvocation{
 		Model:        opts.Model,
-		Budget:       opts.Budget,
 		Name:         fmt.Sprintf("pool:%s:%s", worker, opts.TicketID),
 		SystemPrompt: systemPrompt,
 		Prompt:       workerPrompt,

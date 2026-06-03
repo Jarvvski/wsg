@@ -610,7 +610,7 @@ func TestDispatchGroupRoundTrip(t *testing.T) {
 				Branch:    &branch,
 			},
 		},
-		Opts: DispatchGroupOpts{Model: "opus", Budget: "20"},
+		Opts: DispatchGroupOpts{Model: "opus"},
 	}
 
 	saveDispatchGroup(path, dg)

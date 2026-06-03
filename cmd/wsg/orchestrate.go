@@ -31,8 +31,7 @@ type SubIssueState struct {
 }
 
 type DispatchGroupOpts struct {
-	Model  string `json:"model"`
-	Budget string `json:"budget"`
+	Model string `json:"model"`
 }
 
 type DependencyContext struct {
@@ -284,7 +283,7 @@ Rules:
 	info("Building dependency graph for %s...", parent)
 
 	output, err := claudeQuery(r.Root, prompt,
-		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue", "0.50")
+		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue")
 	if err != nil {
 		return nil, err
 	}
@@ -311,8 +310,7 @@ Rules:
 		GHRepo:    repo,
 		SubIssues: make(map[string]*SubIssueState),
 		Opts: DispatchGroupOpts{
-			Model:  opts.Model,
-			Budget: opts.Budget,
+			Model: opts.Model,
 		},
 	}
 
@@ -604,7 +602,7 @@ func tryOrchestrate(r *RepoContext, ticket string, opts *DispatchOpts) {
 func spawnOrchestrator(r *RepoContext, parent string, opts *DispatchOpts) error {
 	logFile := filepath.Join(r.poolDir(), "dispatch-"+strings.ToLower(parent)+".log")
 	_, err := startBackground(r.Root, logFile, "wsg", "__orchestrate", parent,
-		"--model", opts.Model, "--budget", opts.Budget)
+		"--model", opts.Model)
 	return err
 }
 
@@ -620,24 +618,18 @@ func spawnOrchestratorCLI(r *RepoContext, parent string, opts *DispatchOpts) {
 
 func cmdOrchestrate(args []string) {
 	if len(args) == 0 {
-		fatal("Usage: wsg __orchestrate <PARENT-TICKET> [--model MODEL] [--budget USD]")
+		fatal("Usage: wsg __orchestrate <PARENT-TICKET> [--model MODEL]")
 	}
 
 	parent := args[0]
 	opts := DispatchOpts{
-		Model:  "opus",
-		Budget: "30",
+		Model: "opus",
 	}
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--model":
 			if i+1 < len(args) {
 				opts.Model = args[i+1]
-				i++
-			}
-		case "--budget":
-			if i+1 < len(args) {
-				opts.Budget = args[i+1]
 				i++
 			}
 		}

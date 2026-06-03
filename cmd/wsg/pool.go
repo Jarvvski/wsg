@@ -217,9 +217,9 @@ func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
 
 // finalizeFromLog transitions a busy worker to its terminal state from the
 // agent's stream-json log: done (with the logged exit code and resolved branch)
-// on a success result, failed otherwise - including a budget-exceeded run, which
-// the CLI reports as is_error even though the process itself exits 0. A missing
-// or unparseable result means the process died without reporting, also a failure.
+// on a success result, failed otherwise - including a run the CLI reports as
+// is_error even though the process itself exits 0. A missing or unparseable
+// result means the process died without reporting, also a failure.
 func (h *WorkerHandle) finalizeFromLog(r *RepoContext, worker string) {
 	ws := h.state
 	if ws.LogFile != nil {

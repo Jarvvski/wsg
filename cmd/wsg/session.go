@@ -10,7 +10,6 @@ import (
 
 type resumeOpts struct {
 	Prompt       string
-	Budget       string
 	SystemPrompt string
 	Foreground   bool
 }
@@ -39,7 +38,6 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 	h.Resume(logFile)
 
 	inv := claudeInvocation{
-		Budget:    opts.Budget,
 		SessionID: sessionID,
 		Prompt:    opts.Prompt,
 	}
@@ -57,12 +55,11 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 
 func cmdSend(args []string) {
 	if len(args) < 2 {
-		fatal("Usage: wsg send <worker> \"<prompt>\" [--fg] [--budget USD]")
+		fatal("Usage: wsg send <worker> \"<prompt>\" [--fg]")
 	}
 
 	var worker, prompt string
 	var fgFlag *bool
-	budget := "10"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -72,11 +69,6 @@ func cmdSend(args []string) {
 		case "--bg":
 			f := false
 			fgFlag = &f
-		case "--budget":
-			if i+1 < len(args) {
-				budget = args[i+1]
-				i++
-			}
 		default:
 			if worker == "" {
 				worker = args[i]
@@ -87,7 +79,7 @@ func cmdSend(args []string) {
 	}
 
 	if worker == "" || prompt == "" {
-		fatal("Usage: wsg send <worker> \"<prompt>\" [--fg|--bg] [--budget USD]")
+		fatal("Usage: wsg send <worker> \"<prompt>\" [--fg|--bg]")
 	}
 
 	r, err := newRepoContext()
@@ -102,7 +94,6 @@ func cmdSend(args []string) {
 
 	pid, err := resumeWorker(r, worker, resumeOpts{
 		Prompt:       prompt,
-		Budget:       budget,
 		SystemPrompt: sendSystemPrompt(ghRepo(r)),
 		Foreground:   fg,
 	})
@@ -116,12 +107,11 @@ func cmdSend(args []string) {
 
 func cmdReview(args []string) {
 	if len(args) == 0 {
-		fatal("Usage: wsg review <worker> [--fg] [--budget USD]")
+		fatal("Usage: wsg review <worker> [--fg]")
 	}
 
 	var worker string
 	var fgFlag *bool
-	budget := "10"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -131,11 +121,6 @@ func cmdReview(args []string) {
 		case "--bg":
 			f := false
 			fgFlag = &f
-		case "--budget":
-			if i+1 < len(args) {
-				budget = args[i+1]
-				i++
-			}
 		default:
 			if worker == "" {
 				worker = args[i]
@@ -144,7 +129,7 @@ func cmdReview(args []string) {
 	}
 
 	if worker == "" {
-		fatal("Usage: wsg review <worker> [--fg|--bg] [--budget USD]")
+		fatal("Usage: wsg review <worker> [--fg|--bg]")
 	}
 
 	r, err := newRepoContext()
@@ -163,7 +148,6 @@ func cmdReview(args []string) {
 
 	pid, err := resumeWorker(r, worker, resumeOpts{
 		Prompt:     prompt,
-		Budget:     budget,
 		Foreground: fg,
 	})
 	if err != nil {

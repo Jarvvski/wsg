@@ -138,7 +138,6 @@ Dispatch:
   wsg dispatch --all            Dispatch all ready-for-agent tickets
     --fg / --bg                 Override foreground config for this run
     --model MODEL               Model for worker agents (default: opus)
-    --budget USD                Max spend per worker (default: 30)
     --label LABEL               Label filter for --all (default: ready-for-agent)
     --no-orchestrate            Skip parent issue detection, dispatch as single ticket
 
@@ -150,7 +149,6 @@ Dispatch:
     --fg / --bg                 Override foreground config for this run
   wsg review <worker>           Address PR review comments in worker session
     --fg / --bg                 Override foreground config for this run
-    --budget USD                Max spend (default: 10)
   wsg mount <worker>            Open worker in kitty (claude + two shells)
 
 Config (pool.json):
