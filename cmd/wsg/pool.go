@@ -671,14 +671,7 @@ func cmdPoolRm(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	configFile := r.poolConfigFile()
-	cfg, err := loadPoolConfig(configFile)
-	if err != nil {
-		fatal("No pool")
-	}
-
-	poolDir := r.poolDir()
-	sf := filepath.Join(poolDir, worker+".json")
+	sf := filepath.Join(r.poolDir(), worker+".json")
 	if h, err := OpenWorker(sf); err == nil {
 		h.CheckLiveness(r, worker)
 		if h.State().Status == "busy" {
@@ -686,20 +679,46 @@ func cmdPoolRm(args []string) {
 		}
 	}
 
-	cmdRm([]string{"--force", worker})
+	size, err := removePoolWorker(r, worker)
+	if err != nil {
+		fatal("%v", err)
+	}
+	info("Removed %s (pool size: %d)", worker, size)
+}
+
+// removePoolWorker tears down an idle/done/failed worker: removes its jj
+// workspace, deletes its state/log files, and drops it from the pool config.
+// Caller is responsible for ensuring the worker is not busy.
+func removePoolWorker(r *RepoContext, worker string) (int, error) {
+	configFile := r.poolConfigFile()
+	cfg, err := loadPoolConfig(configFile)
+	if err != nil {
+		return 0, fmt.Errorf("no pool: %w", err)
+	}
+
+	wspath := r.workerDir(worker)
+	run(r.Root, "jj", "workspace", "forget", worker)
+	cacheRemoveEntry(r.cacheFile(), worker)
+	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
+		os.RemoveAll(wspath)
+	}
+
+	poolDir := r.poolDir()
 	os.Remove(filepath.Join(poolDir, worker+".json"))
 	os.Remove(filepath.Join(poolDir, worker+".log"))
 
-	remaining := make([]string, 0, len(cfg.Workers)-1)
+	remaining := make([]string, 0, len(cfg.Workers))
 	for _, w := range cfg.Workers {
 		if w != worker {
 			remaining = append(remaining, w)
 		}
 	}
-	cfg.Size = len(remaining)
 	cfg.Workers = remaining
-	savePoolConfig(configFile, cfg)
-	info("Removed %s (pool size: %d)", worker, cfg.Size)
+	cfg.Size = len(remaining)
+	if err := savePoolConfig(configFile, cfg); err != nil {
+		return 0, err
+	}
+	return cfg.Size, nil
 }
 
 func cmdPoolReset(args []string) {

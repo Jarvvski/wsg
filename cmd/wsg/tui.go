@@ -368,11 +368,18 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if w.state.Status == "busy" {
-			m.status = "Cannot reset: worker is busy"
+			m.status = "Cannot dismiss: worker is busy"
 			return m, nil
 		}
 		if w.state.Status == "idle" {
-			m.status = "Worker is already idle"
+			name := w.name
+			size, err := removePoolWorker(m.repo, name)
+			if err != nil {
+				m.status = fmt.Sprintf("Dismiss failed: %v", err)
+				return m, nil
+			}
+			m.loadWorkers()
+			m.status = fmt.Sprintf("Dismissed %s (pool size: %d)", displayWorker(name), size)
 			return m, nil
 		}
 		sf := m.repo.workerStateFile(w.name)
