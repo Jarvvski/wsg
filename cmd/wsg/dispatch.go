@@ -119,7 +119,7 @@ func cmdDispatch(args []string) {
 
 	dispatched := 0
 	for _, tid := range tickets {
-		worker, err := findIdleWorker(r)
+		worker, err := claimIdleWorker(r, tid)
 		if err != nil {
 			if dispatched > 0 {
 				info("No more idle workers. Dispatched %d/%d ticket(s).", dispatched, need)
@@ -175,7 +175,7 @@ func dispatchAll(opts *DispatchOpts) {
 
 	count := 0
 	for _, tid := range tickets {
-		worker, err := findIdleWorker(r)
+		worker, err := claimIdleWorker(r, tid)
 		if err != nil {
 			info("No more idle workers. Dispatched %d/%d ticket(s).", count, need)
 			return
@@ -228,11 +228,10 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
 
 	sf := r.workerStateFile(worker)
-	h, err := CreateIdleWorker(sf)
+	h, err := OpenWorker(sf)
 	if err != nil {
-		fatal("Failed to create worker state: %v", err)
+		fatal("Failed to open worker state: %v", err)
 	}
-	h.Dispatch(opts.TicketID, logFile, ticketLower)
 
 	systemPrompt := buildDispatchSystemPrompt(repo, branchPrefix, ticketLower, depCtx)
 	prCreateCmd := buildPRCreateCmd(repo, opts.TicketID, depCtx)

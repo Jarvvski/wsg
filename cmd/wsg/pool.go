@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -332,6 +333,46 @@ func findIdleWorker(r *RepoContext) (string, error) {
 		if ws.Status == "idle" {
 			return worker, nil
 		}
+	}
+	return "", fmt.Errorf("no idle workers")
+}
+
+// claimIdleWorker atomically picks the first idle worker and marks it busy
+// with the dispatch metadata for ticket. Concurrent dispatchers serialise on
+// a pool-wide flock, so two callers cannot claim the same worker.
+func claimIdleWorker(r *RepoContext, ticket string) (string, error) {
+	lockPath := filepath.Join(r.poolDir(), ".dispatch.lock")
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return "", fmt.Errorf("open dispatch lock: %w", err)
+	}
+	defer lf.Close()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		return "", fmt.Errorf("flock dispatch lock: %w", err)
+	}
+	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+
+	cfg, err := loadPoolConfig(r.poolConfigFile())
+	if err != nil {
+		return "", err
+	}
+	poolDir := r.poolDir()
+	ticketLower := strings.ToLower(ticket)
+	for _, worker := range cfg.Workers {
+		sf := r.workerStateFile(worker)
+		ws, err := loadWorkerState(sf)
+		if err != nil {
+			continue
+		}
+		if ws.Status != "idle" {
+			continue
+		}
+		logFile := filepath.Join(poolDir, worker+".log")
+		ws.MarkDispatched(ticket, logFile, ticketLower)
+		if err := saveWorkerState(sf, ws); err != nil {
+			return "", fmt.Errorf("save worker state: %w", err)
+		}
+		return worker, nil
 	}
 	return "", fmt.Errorf("no idle workers")
 }

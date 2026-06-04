@@ -451,7 +451,7 @@ func watchDispatchGroup(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
 
 		ready := readyToDispatch(dg)
 		for _, tid := range ready {
-			worker, err := findIdleWorker(r)
+			worker, err := claimIdleWorker(r, tid)
 			if err != nil {
 				info("No idle workers for %s, will retry next cycle", tid)
 				continue
@@ -679,7 +679,7 @@ func cmdOrchestrate(args []string) {
 		if dg == nil {
 			// No sub-issues - fall back to single-ticket dispatch
 			opts.TicketID = parent
-			worker, werr := findIdleWorker(r)
+			worker, werr := claimIdleWorker(r, parent)
 			if werr != nil {
 				cfg, cfgErr := loadPoolConfig(r.poolConfigFile())
 				if cfgErr != nil {
@@ -688,7 +688,7 @@ func cmdOrchestrate(args []string) {
 				newSize := cfg.Size + 1
 				info("Auto-expanding pool to %d for %s", newSize, parent)
 				cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
-				worker, werr = findIdleWorker(r)
+				worker, werr = claimIdleWorker(r, parent)
 				if werr != nil {
 					fatal("No idle workers for %s", parent)
 				}
