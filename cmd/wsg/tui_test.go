@@ -303,6 +303,48 @@ func TestTUIResetDoneWorker(t *testing.T) {
 	}
 }
 
+func TestTUIKillBusyWorker(t *testing.T) {
+	ticket := "AMBA-42"
+	startedAt := "2026-05-20T14:00:00Z"
+	logFile := "/tmp/test.log"
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": {
+			Status:    "busy",
+			Ticket:    &ticket,
+			StartedAt: &startedAt,
+			LogFile:   &logFile,
+		},
+	})
+
+	m := newTUIModel(r)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'K', Text: "K"})
+	m = updated.(tuiModel)
+
+	if !strings.Contains(m.status, "Killing") {
+		t.Errorf("expected killing status, got: %q", m.status)
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to be returned for kill")
+	}
+
+	// Execute the kill command (no PID set, so no real process kill happens)
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(tuiModel)
+
+	if !strings.Contains(m.status, "Killed") {
+		t.Errorf("expected killed status, got: %q", m.status)
+	}
+
+	ws, err := loadWorkerState(r.workerStateFile("worker-aaa"))
+	if err != nil {
+		t.Fatalf("failed to load worker state: %v", err)
+	}
+	if ws.Status != "idle" {
+		t.Errorf("worker status = %q, want idle", ws.Status)
+	}
+}
+
 func TestTUIDispatchOpensTicketInput(t *testing.T) {
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": newIdleWorkerState(),

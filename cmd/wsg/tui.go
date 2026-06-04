@@ -29,7 +29,7 @@ const (
 	viewDispatch
 )
 
-const defaultStatus = "[n]ew  [N]all  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [q]uit"
+const defaultStatus = "[n]ew  [N]all  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [K]ill  [q]uit"
 
 type tuiWorker struct {
 	name         string
@@ -225,6 +225,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = fmt.Sprintf("Opened PR for %s", displayWorker(msg.worker))
 		}
+	case killResultMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Kill failed: %v", msg.err)
+		} else {
+			m.status = fmt.Sprintf("Killed %s", displayWorker(msg.worker))
+		}
+		m.loadWorkers()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -390,6 +397,13 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		w.lastActivity = ""
 		m.status = fmt.Sprintf("Reset %s to idle", displayWorker(w.name))
 		return m, nil
+	case "K":
+		w := m.selectedWorker()
+		if w == nil {
+			return m, nil
+		}
+		m.status = fmt.Sprintf("Killing %s...", displayWorker(w.name))
+		return m, m.doKill(w)
 	case "f":
 		w := m.selectedWorker()
 		if w == nil {
@@ -544,6 +558,11 @@ type openPRResultMsg struct {
 	err    error
 }
 
+type killResultMsg struct {
+	worker string
+	err    error
+}
+
 func (m tuiModel) doRebase(w *tuiWorker) tea.Cmd {
 	name := w.name
 	branch := *w.state.BranchName
@@ -573,6 +592,29 @@ func (m tuiModel) doOpenPR(w *tuiWorker) tea.Cmd {
 			return openPRResultMsg{worker: name, err: fmt.Errorf("no PR for branch %s", branch)}
 		}
 		return openPRResultMsg{worker: name}
+	}
+}
+
+func (m tuiModel) doKill(w *tuiWorker) tea.Cmd {
+	name := w.name
+	r := m.repo
+	return func() tea.Msg {
+		h, err := OpenWorker(r.workerStateFile(name))
+		if err != nil {
+			return killResultMsg{worker: name, err: err}
+		}
+		if h.State().PID != nil && processAlive(*h.State().PID) {
+			killProcess(*h.State().PID)
+		}
+		if err := h.Reset(); err != nil {
+			return killResultMsg{worker: name, err: err}
+		}
+		wspath := r.workerDir(name)
+		if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
+			startBackground(wspath, os.DevNull, "sh", "-c",
+				"jj restore 2>/dev/null; jj new main 2>/dev/null")
+		}
+		return killResultMsg{worker: name}
 	}
 }
 
