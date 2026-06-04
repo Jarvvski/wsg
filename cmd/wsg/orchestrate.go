@@ -250,12 +250,13 @@ func buildDepContext(dg *DispatchGroup, ticketID string) *DependencyContext {
 func buildDependencyGraph(r *RepoContext, parent string, opts *DispatchOpts) (*DispatchGroup, error) {
 	repo := ghRepo(r)
 
-	prompt := fmt.Sprintf(`Fetch the dependency graph for Linear issue %s.
+	prompt := fmt.Sprintf(`Fetch the parent-child sub-issue graph for Linear issue %s.
 
 Steps:
-1. Use the Linear MCP list_issues tool with parentId "%s" to get all sub-issues.
-2. For each sub-issue, use the Linear MCP get_issue tool with id set to the sub-issue identifier and includeRelations set to true.
-3. Return ONLY a JSON object in this exact format (no markdown, no explanation):
+1. Call list_issues with parentId="%s" to enumerate the DIRECT CHILDREN of %s via the parent-child relationship.
+2. If step 1 returns zero issues, respond with exactly: {"sub_issues": {}} and stop. Do not call any other tools.
+3. Otherwise, for each child returned in step 1, call get_issue with includeRelations=true to read its blockedBy relations.
+4. Return ONLY a JSON object (no markdown, no explanation) in this format:
 
 {
   "sub_issues": {
@@ -274,11 +275,14 @@ Steps:
   }
 }
 
-Rules:
-- status is the exact Linear status name (e.g. "Backlog", "Todo", "In Progress", "In Review", "Done")
-- blocked_by must contain only sibling sub-issue IDs from the blockedBy relations
-- cross_repo is true if the sub-issue targets a different codebase than %s (look for repo/service names in the title or description)
-- Include ALL sub-issues even if they have no blockers`, parent, parent, repo)
+CRITICAL constraints (read carefully):
+- Only include issues whose parent is %s (i.e. issues returned by step 1's list_issues call).
+- Do NOT include %s itself in sub_issues.
+- Do NOT include issues from %s's own blocks / blockedBy / relatedTo relations. Those are siblings or cousins of %s, not its children. A common mistake is to call get_issue on %s and treat its "blocks" list as sub-issues - never do that.
+- blocked_by must contain ONLY sibling IDs that also appear as keys in sub_issues. Drop any blockedBy entry that is not a child of %s.
+- status is the exact Linear status name (e.g. "Backlog", "Todo", "Planned", "In Progress", "In Review", "Done").
+- cross_repo is true if the sub-issue targets a different codebase than %s (look for repo/service names in the title or description).
+- Include ALL children from step 1 even if they have no blockers.`, parent, parent, parent, parent, parent, parent, parent, parent, parent, repo)
 
 	info("Building dependency graph for %s...", parent)
 
@@ -300,8 +304,30 @@ Rules:
 		return nil, fmt.Errorf("failed to parse dependency graph: %v\nraw: %s", err, output)
 	}
 
+	if _, ok := graphResp.SubIssues[parent]; ok {
+		info("  Dropping %s from sub-issues (parent cannot be its own child)", parent)
+		delete(graphResp.SubIssues, parent)
+	}
+
 	if len(graphResp.SubIssues) == 0 {
 		return nil, nil
+	}
+
+	siblingSet := make(map[string]bool, len(graphResp.SubIssues))
+	for id := range graphResp.SubIssues {
+		siblingSet[id] = true
+	}
+	for id, si := range graphResp.SubIssues {
+		filtered := si.BlockedBy[:0]
+		for _, dep := range si.BlockedBy {
+			if siblingSet[dep] {
+				filtered = append(filtered, dep)
+			} else {
+				info("  %s: dropping non-sibling blocker %s", id, dep)
+			}
+		}
+		si.BlockedBy = filtered
+		graphResp.SubIssues[id] = si
 	}
 
 	dg := &DispatchGroup{
