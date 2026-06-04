@@ -611,6 +611,8 @@ func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
+		ensurePoolCapacityForBatch(repo, tickets)
+
 		dispatched := 0
 		for _, ticket := range tickets {
 			opts := &DispatchOpts{
@@ -637,6 +639,33 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 			dispatched: dispatched,
 		}
 	}
+}
+
+// ensurePoolCapacityForBatch grows the pool up front so concurrent orchestrators
+// don't race on cmdPoolResize. Counts only tickets that will actually dispatch
+// (skips groups already in a terminal state).
+func ensurePoolCapacityForBatch(r *RepoContext, tickets []string) {
+	cfg, err := loadPoolConfig(r.poolConfigFile())
+	if err != nil {
+		return
+	}
+	need := 0
+	for _, ticket := range tickets {
+		dgFile := dispatchGroupFile(r, ticket)
+		if dg := syncExistingGroup(r, dgFile); dg != nil && isGroupTerminal(dg) {
+			continue
+		}
+		need++
+	}
+	if need == 0 {
+		return
+	}
+	idle := countIdleWorkers(r)
+	if idle >= need {
+		return
+	}
+	newSize := cfg.Size + (need - idle)
+	cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
 }
 
 func (m tuiModel) doFetchAll() tea.Cmd {
