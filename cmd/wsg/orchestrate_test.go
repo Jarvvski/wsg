@@ -491,7 +491,7 @@ func TestSyncGroupFromWorkersCompleted(t *testing.T) {
 	poolDir, r := setupPoolDir(t)
 
 	branch := "adam/amba-10-auth"
-	ws := &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
+	ws := &WorkerState{Status: WorkerStatusDone, ResolvedBranch: &branch}
 	saveWorkerState(filepath.Join(poolDir, "worker-1.json"), ws)
 
 	worker := "worker-1"
@@ -665,7 +665,7 @@ func (f *fakeDispatchWorld) LaunchWorker(worker, ticket string, depCtx *Dependen
 func TestAdvanceOnceSyncDoneResetsWorker(t *testing.T) {
 	branch := "adam/amba-10-auth"
 	world := newFakeDispatchWorld()
-	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusDone, ResolvedBranch: &branch}
 
 	worker := "worker-1"
 	dg := &DispatchGroup{
@@ -847,7 +847,7 @@ func TestAdvanceOnceFullLifecycle(t *testing.T) {
 	}
 
 	branch := "adam/amba-10-auth"
-	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusDone, ResolvedBranch: &branch}
 
 	if !dg.AdvanceOnce(world) {
 		t.Fatal("tick 2: expected changed=true (sync done)")

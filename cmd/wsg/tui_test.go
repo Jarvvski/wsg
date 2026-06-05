@@ -57,7 +57,7 @@ func TestTUIViewRendersWorkerList(t *testing.T) {
 			Ticket:      &ticket,
 			StartedAt:   &startedAt,
 			CompletedAt: &completedAt,
-			BranchName:  &branch,
+			ResolvedBranch: &branch,
 		},
 	})
 
@@ -209,7 +209,7 @@ func TestTUIRebaseAllowedOnDoneWorker(t *testing.T) {
 			Ticket:      &ticket,
 			StartedAt:   &startedAt,
 			CompletedAt: &completedAt,
-			BranchName:  &branch,
+			ResolvedBranch: &branch,
 		},
 	})
 
@@ -266,7 +266,7 @@ func TestTUIResetDoneWorker(t *testing.T) {
 			Ticket:      &ticket,
 			StartedAt:   &startedAt,
 			CompletedAt: &completedAt,
-			BranchName:  &branch,
+			ResolvedBranch: &branch,
 		},
 	})
 

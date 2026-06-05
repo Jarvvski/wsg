@@ -141,11 +141,11 @@ func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
 	}
 	ws := h.Status()
 
-	if ws.BranchName == nil || *ws.BranchName == "" {
+	if !ws.HasBranch() {
 		return "", fmt.Errorf("worker %s has no branch - has it run a dispatch?", worker)
 	}
 
-	if !strings.Contains(*ws.BranchName, "-") || !strings.HasPrefix(*ws.BranchName, "adam/") {
+	if !ws.BranchResolved() {
 		h.refreshBranch()
 	}
 
@@ -154,12 +154,13 @@ func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
 		return "", fmt.Errorf("cannot detect GitHub repo")
 	}
 
-	pr, err := ghPRForBranch(repo, *ws.BranchName)
+	branch := ws.Branch()
+	pr, err := ghPRForBranch(repo, branch)
 	if err != nil {
 		return "", err
 	}
 	if pr == nil {
-		return "", fmt.Errorf("no PR found for branch %s", *ws.BranchName)
+		return "", fmt.Errorf("no PR found for branch %s", branch)
 	}
 
 	hasConflicts := strings.EqualFold(pr.Mergeable, "CONFLICTING")

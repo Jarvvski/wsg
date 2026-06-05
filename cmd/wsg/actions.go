@@ -63,15 +63,16 @@ func (a *WorkerActions) OpenPR(worker string) error {
 		return err
 	}
 	ws := h.Status()
-	if ws.BranchName == nil || *ws.BranchName == "" {
+	if !ws.HasBranch() {
 		return fmt.Errorf("worker %s has no branch", worker)
 	}
 	repo := ghRepo(a.repo)
 	if repo == "" {
 		return fmt.Errorf("cannot detect GitHub repo")
 	}
-	if err := ghOpenInBrowser(repo, *ws.BranchName); err != nil {
-		return fmt.Errorf("no PR for branch %s", *ws.BranchName)
+	branch := ws.Branch()
+	if err := ghOpenInBrowser(repo, branch); err != nil {
+		return fmt.Errorf("no PR for branch %s", branch)
 	}
 	return nil
 }
@@ -85,14 +86,15 @@ func (a *WorkerActions) Rebase(worker string) error {
 		return err
 	}
 	ws := h.Status()
-	if ws.BranchName == nil || *ws.BranchName == "" {
+	if !ws.HasBranch() {
 		return fmt.Errorf("worker %s has no branch", worker)
 	}
+	branch := ws.Branch()
 	wspath := a.repo.workerDir(worker)
-	if err := jjRebase(wspath, *ws.BranchName, "main"); err != nil {
+	if err := jjRebase(wspath, branch, "main"); err != nil {
 		return err
 	}
-	if err := jjPush(wspath, *ws.BranchName); err != nil {
+	if err := jjPush(wspath, branch); err != nil {
 		jjOpUndo(wspath)
 		return fmt.Errorf("rebase caused conflicts, reverted - use [r]eview instead")
 	}

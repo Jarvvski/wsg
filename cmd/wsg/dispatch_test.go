@@ -111,7 +111,7 @@ func TestSyncDispatchGroup(t *testing.T) {
 		},
 	}
 
-	ws := &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
+	ws := &WorkerState{Status: WorkerStatusDone, ResolvedBranch: &branch}
 	saveWorkerState(filepath.Join(poolDir, worker+".json"), ws)
 
 	dgFile := filepath.Join(poolDir, "dispatch-amba-9.json")

@@ -21,7 +21,53 @@ type PoolConfig struct {
 	Foreground *bool    `json:"foreground,omitempty"`
 }
 
+// WorkerState carries the worker's branch as two in-memory fields - the
+// ticket-derived placeholder set at dispatch (BranchPrefix) and the agent's
+// real branch resolved from jj bookmarks (ResolvedBranch). On disk both
+// collapse back into a single `branch_name` key for jj-wsx wire compat:
+// MarshalJSON emits resolved-then-prefix, UnmarshalJSON routes by the
+// "<branchOwner>/" prefix. Each reader asks Branch() for the best-known
+// form; resolveBranch is the only writer of ResolvedBranch.
 type WorkerState struct {
+	Status         WorkerStatus
+	Ticket         *string
+	PID            *int
+	StartedAt      *string
+	CompletedAt    *string
+	LogFile        *string
+	BranchPrefix   string
+	ResolvedBranch *string
+	ExitCode       *int
+	Error          *string
+}
+
+// Branch returns the best-known branch for this worker: the resolved form
+// if jj has been scanned, the placeholder ticket prefix otherwise, "" if
+// neither has been set. Most callers want this; the few that need to know
+// whether the agent's real branch has been observed call BranchResolved.
+func (ws *WorkerState) Branch() string {
+	if ws.ResolvedBranch != nil {
+		return *ws.ResolvedBranch
+	}
+	return ws.BranchPrefix
+}
+
+// BranchResolved reports whether ResolvedBranch has been populated from
+// jj. Used by review-prompt building to decide if it needs to refresh
+// before looking up the PR.
+func (ws *WorkerState) BranchResolved() bool {
+	return ws.ResolvedBranch != nil
+}
+
+// HasBranch reports whether any branch (prefix or resolved) has been set
+// on this worker - i.e. whether a dispatch has run.
+func (ws *WorkerState) HasBranch() bool {
+	return ws.ResolvedBranch != nil || ws.BranchPrefix != ""
+}
+
+// workerStateWire is the on-disk shape jj-wsx consumes. BranchName carries
+// resolved-then-prefix; all other fields mirror WorkerState 1:1.
+type workerStateWire struct {
 	Status      WorkerStatus `json:"status"`
 	Ticket      *string      `json:"ticket"`
 	PID         *int         `json:"pid"`
@@ -31,6 +77,66 @@ type WorkerState struct {
 	BranchName  *string      `json:"branch_name"`
 	ExitCode    *int         `json:"exit_code"`
 	Error       *string      `json:"error"`
+}
+
+func (ws *WorkerState) MarshalJSON() ([]byte, error) {
+	w := workerStateWire{
+		Status:      ws.Status,
+		Ticket:      ws.Ticket,
+		PID:         ws.PID,
+		StartedAt:   ws.StartedAt,
+		CompletedAt: ws.CompletedAt,
+		LogFile:     ws.LogFile,
+		BranchName:  ws.branchNameWire(),
+		ExitCode:    ws.ExitCode,
+		Error:       ws.Error,
+	}
+	return json.Marshal(w)
+}
+
+func (ws *WorkerState) UnmarshalJSON(data []byte) error {
+	var w workerStateWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	ws.Status = w.Status
+	ws.Ticket = w.Ticket
+	ws.PID = w.PID
+	ws.StartedAt = w.StartedAt
+	ws.CompletedAt = w.CompletedAt
+	ws.LogFile = w.LogFile
+	ws.ExitCode = w.ExitCode
+	ws.Error = w.Error
+	ws.BranchPrefix = ""
+	ws.ResolvedBranch = nil
+	if w.BranchName != nil && *w.BranchName != "" {
+		if isResolvedBranchName(*w.BranchName) {
+			b := *w.BranchName
+			ws.ResolvedBranch = &b
+		} else {
+			ws.BranchPrefix = *w.BranchName
+		}
+	}
+	return nil
+}
+
+func (ws *WorkerState) branchNameWire() *string {
+	if ws.ResolvedBranch != nil {
+		return ws.ResolvedBranch
+	}
+	if ws.BranchPrefix != "" {
+		p := ws.BranchPrefix
+		return &p
+	}
+	return nil
+}
+
+// isResolvedBranchName routes an on-disk branch_name back into the right
+// in-memory slot: the convention "<owner>/<ticket>-<slug>" tells us a
+// branch_name is the agent's real branch, anything else is the dispatch-
+// time placeholder.
+func isResolvedBranchName(s string) bool {
+	return strings.HasPrefix(s, branchOwner+"/")
 }
 
 func resolveForeground(r *RepoContext, flag *bool) bool {
@@ -47,13 +153,14 @@ func newIdleWorkerState() *WorkerState {
 	return &WorkerState{Status: WorkerStatusIdle}
 }
 
-func (ws *WorkerState) MarkDispatched(ticket, logFile, branchName string) {
+func (ws *WorkerState) MarkDispatched(ticket, logFile, branchPrefix string) {
 	now := nowUTC()
 	ws.Status = WorkerStatusBusy
 	ws.Ticket = &ticket
 	ws.StartedAt = &now
 	ws.LogFile = &logFile
-	ws.BranchName = &branchName
+	ws.BranchPrefix = branchPrefix
+	ws.ResolvedBranch = nil
 	ws.CompletedAt = nil
 	ws.ExitCode = nil
 	ws.Error = nil
@@ -389,21 +496,22 @@ func (h *WorkerHandle) finalizeFromLog() {
 	h.save()
 }
 
-// resolveBranch refreshes the stored branch name from the worker's actual jj
+// resolveBranch populates ResolvedBranch from the worker's actual jj
 // bookmarks - useful after a run when the agent has created the real
-// `adam/<ticket>-<slug>` branch and the state file still holds the placeholder
-// ticket prefix. Mutates h.state in memory only; the caller is responsible
-// for persisting (finalizeFromLog folds it into its single save).
+// `adam/<ticket>-<slug>` branch and the state file still holds only the
+// placeholder ticket prefix. No-op if already resolved or no prefix is set.
+// Mutates h.state in memory only; the caller is responsible for persisting
+// (finalizeFromLog folds it into its single save).
 func (h *WorkerHandle) resolveBranch() {
 	if h.repo == nil || h.worker == "" {
 		return
 	}
 	ws := h.state
-	if ws.BranchName == nil || *ws.BranchName == "" {
+	if ws.ResolvedBranch != nil || ws.BranchPrefix == "" {
 		return
 	}
-	if resolved := jjResolveBranchForTicket(h.repo.workerDir(h.worker), *ws.BranchName); resolved != nil {
-		ws.BranchName = resolved
+	if resolved := jjResolveBranchForTicket(h.repo.workerDir(h.worker), ws.BranchPrefix); resolved != nil {
+		ws.ResolvedBranch = resolved
 	}
 }
 
