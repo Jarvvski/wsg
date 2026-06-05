@@ -97,11 +97,10 @@ func (m *tuiModel) loadWorkers() {
 	}
 	workers := make([]tuiWorker, 0, len(cfg.Workers))
 	for _, name := range cfg.Workers {
-		h, err := OpenWorker(m.repo.workerStateFile(name))
+		h, err := LoadLiveWorker(m.repo, name)
 		if err != nil {
 			h, _ = CreateIdleWorker(m.repo.workerStateFile(name))
 		}
-		h.CheckLiveness(m.repo, name)
 		ws := h.State()
 		activity := ""
 		if ws.LogFile != nil && *ws.LogFile != "" {

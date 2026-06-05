@@ -116,11 +116,10 @@ func syncGroupFromWorkers(r *RepoContext, dg *DispatchGroup) bool {
 			continue
 		}
 		worker := *si.Worker
-		h, err := OpenWorker(r.workerStateFile(worker))
+		h, err := LoadLiveWorker(r, worker)
 		if err != nil {
 			continue
 		}
-		h.CheckLiveness(r, worker)
 		ws := h.State()
 		switch ws.Status {
 		case "done":

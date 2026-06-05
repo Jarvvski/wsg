@@ -453,6 +453,61 @@ func TestOpenWorkerMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadLiveWorkerReconcilesDeadBusyWorker(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	os.MkdirAll(poolDir, 0755)
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	logFile := filepath.Join(poolDir, "worker-1.log")
+	os.WriteFile(logFile, []byte(`{"type":"result","subtype":"success","is_error":false,"result":"done"}`+"\n"), 0644)
+
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", logFile, "amba-42")
+	ws.SetPID(99999999)
+	path := r.workerStateFile("worker-1")
+	saveWorkerState(path, ws)
+
+	h, err := LoadLiveWorker(r, "worker-1")
+	if err != nil {
+		t.Fatalf("LoadLiveWorker: %v", err)
+	}
+	if h.State().Status != "done" {
+		t.Errorf("status = %q, want done (reconciled from dead PID)", h.State().Status)
+	}
+
+	loaded, _ := loadWorkerState(path)
+	if loaded.Status != "done" {
+		t.Errorf("persisted status = %q, want done", loaded.Status)
+	}
+}
+
+func TestLoadLiveWorkerLeavesIdleAlone(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	os.MkdirAll(poolDir, 0755)
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	ws := newIdleWorkerState()
+	saveWorkerState(r.workerStateFile("worker-1"), ws)
+
+	h, err := LoadLiveWorker(r, "worker-1")
+	if err != nil {
+		t.Fatalf("LoadLiveWorker: %v", err)
+	}
+	if h.State().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.State().Status)
+	}
+}
+
+func TestLoadLiveWorkerMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	if _, err := LoadLiveWorker(r, "worker-missing"); err == nil {
+		t.Fatal("expected error for missing worker")
+	}
+}
+
 func TestCreateIdleWorker(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "worker.json")

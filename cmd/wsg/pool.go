@@ -235,6 +235,22 @@ func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
 	h.finalizeFromLog(r, worker)
 }
 
+// LoadLiveWorker opens a worker's state and reconciles it against the running
+// world: if recorded as busy but the PID is no longer alive, the worker is
+// finalised from its log (to done or failed) and that transition is persisted
+// to disk before the handle is returned. Use this on every read-then-decide
+// path (list, shrink, remove, DAG progression, TUI render, resume); use the
+// raw OpenWorker for mutation-only paths where reconciliation would be a
+// wasted log read.
+func LoadLiveWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
+	h, err := OpenWorker(r.workerStateFile(worker))
+	if err != nil {
+		return nil, err
+	}
+	h.CheckLiveness(r, worker)
+	return h, nil
+}
+
 // finalizeFromLog transitions a busy worker to its terminal state from the
 // agent's stream-json log: done (with the logged exit code and resolved branch)
 // on a success result, failed otherwise - including a run the CLI reports as
@@ -573,12 +589,11 @@ func cmdPoolResize(args []string) {
 			idleNames = append(idleNames, name)
 			continue
 		}
-		h, err := OpenWorker(sf)
+		h, err := LoadLiveWorker(r, name)
 		if err != nil {
 			idleNames = append(idleNames, name)
 			continue
 		}
-		h.CheckLiveness(r, name)
 		if h.State().Status == "idle" || h.State().Status == "done" || h.State().Status == "failed" {
 			idleNames = append(idleNames, name)
 		} else {
@@ -637,12 +652,10 @@ func cmdPoolList() {
 	fmt.Printf("%-10s %-10s %-14s %s\n", "------", "------", "------", "-------")
 
 	for _, worker := range cfg.Workers {
-		sf := r.workerStateFile(worker)
-		h, err := OpenWorker(sf)
+		h, err := LoadLiveWorker(r, worker)
 		if err != nil {
 			continue
 		}
-		h.CheckLiveness(r, worker)
 		ws := h.State()
 
 		ticket := "-"
@@ -731,9 +744,7 @@ func cmdPoolRm(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	sf := filepath.Join(r.poolDir(), worker+".json")
-	if h, err := OpenWorker(sf); err == nil {
-		h.CheckLiveness(r, worker)
+	if h, err := LoadLiveWorker(r, worker); err == nil {
 		if h.State().Status == "busy" {
 			fatal("Worker %s is busy. Reset it first: wsg pool reset %s", worker, worker)
 		}

@@ -15,8 +15,7 @@ type resumeOpts struct {
 }
 
 func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
-	sf := r.workerStateFile(worker)
-	h, err := OpenWorker(sf)
+	h, err := LoadLiveWorker(r, worker)
 	if err != nil {
 		return 0, fmt.Errorf("worker %s not found", displayWorker(worker))
 	}
