@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.2.0 - 2026-06-05
+
+### Changed
+
+- **`wsg send` and `wsg review` now report whether the session was actually resumed.** Previously, if the worker's log was missing, truncated, or hadn't flushed its `session_id` yet, the command silently started a context-cold fresh session. It now prints `Resumed session <id>` on success or `Starting fresh session (<reason>)` when the resume couldn't be honoured, so a cold restart is visible instead of paid-for-quietly. The TUI's status line shows the same `(resumed)` / `(fresh: <reason>)` suffix.
+
 ## 0.1.1 - 2026-06-05
 
 ### Fixed

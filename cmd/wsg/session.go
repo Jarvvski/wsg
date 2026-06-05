@@ -12,23 +12,31 @@ type resumeOpts struct {
 	Foreground   bool
 }
 
-func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
+// ResumeOutcome reports whether a resume call continued an existing claude
+// session or started a fresh one. A non-empty SessionID means the previous
+// run's context was inherited; a non-empty Reason means we tried to resume
+// but had to start fresh, so the caller can surface it instead of silently
+// paying for a context-cold restart.
+type ResumeOutcome struct {
+	PID       int
+	SessionID string
+	Reason    string
+}
+
+func (o ResumeOutcome) Resumed() bool { return o.SessionID != "" }
+
+func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (ResumeOutcome, error) {
 	h, err := LoadLiveWorker(r, worker)
 	if err != nil {
-		return 0, fmt.Errorf("worker %s not found", displayWorker(worker))
+		return ResumeOutcome{}, fmt.Errorf("worker %s not found", displayWorker(worker))
 	}
 
 	ws := h.Status()
 	if ws.Status.IsActive() {
-		return 0, fmt.Errorf("worker %s is busy", displayWorker(worker))
+		return ResumeOutcome{}, fmt.Errorf("worker %s is busy", displayWorker(worker))
 	}
 
-	sessionID := ""
-	if ws.LogFile != nil && *ws.LogFile != "" {
-		if sid, err := extractSessionID(*ws.LogFile); err == nil {
-			sessionID = sid
-		}
-	}
+	sessionID, reason := resolveSession(ws)
 
 	inv := claudeInvocation{
 		SessionID: sessionID,
@@ -38,7 +46,29 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 		inv.SystemPrompt = opts.SystemPrompt
 	}
 
-	return h.Resume(inv, opts.Foreground)
+	pid, err := h.Resume(inv, opts.Foreground)
+	if err != nil {
+		return ResumeOutcome{}, err
+	}
+	return ResumeOutcome{PID: pid, SessionID: sessionID, Reason: reason}, nil
+}
+
+// resolveSession decides whether a worker's prior log carries a session ID we
+// can resume. Returns (sessionID, "") when resume is possible, or ("", reason)
+// when the caller must start fresh - reason is human-facing.
+func resolveSession(ws *WorkerState) (string, string) {
+	if ws.LogFile == nil || *ws.LogFile == "" {
+		return "", "no prior session log"
+	}
+	path := *ws.LogFile
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Sprintf("log file unreadable (%v)", err)
+	}
+	sid, err := extractSessionID(path)
+	if err != nil || sid == "" {
+		return "", "log has no session id yet"
+	}
+	return sid, ""
 }
 
 func cmdSend(args []string) {
@@ -80,12 +110,13 @@ func cmdSend(args []string) {
 	worker = resolveWorker(worker)
 	info("Sending to %s...", displayWorker(worker))
 
-	pid, err := NewActions(r).Send(worker, prompt, fg)
+	outcome, err := NewActions(r).Send(worker, prompt, fg)
 	if err != nil {
 		fatal("%v", err)
 	}
+	reportResumeOutcome(outcome)
 	if !fg {
-		info("  %s (PID %d) -> %s", worker, pid, prompt[:min(len(prompt), 60)])
+		info("  %s (PID %d) -> %s", worker, outcome.PID, prompt[:min(len(prompt), 60)])
 	}
 }
 
@@ -125,13 +156,40 @@ func cmdReview(args []string) {
 
 	worker = resolveWorker(worker)
 
-	pid, err := NewActions(r).Review(worker, fg)
+	outcome, err := NewActions(r).Review(worker, fg)
 	if err != nil {
 		fatal("%v", err)
 	}
+	reportResumeOutcome(outcome)
 	if !fg {
-		info("  %s (PID %d) -> review", worker, pid)
+		info("  %s (PID %d) -> review", worker, outcome.PID)
 	}
+}
+
+// reportResumeOutcome surfaces whether the resume continued an existing
+// session or fell back to a fresh one. Silent fresh starts mask context-cold
+// restarts; users have asked to "resume" so a fresh start is worth naming.
+func reportResumeOutcome(o ResumeOutcome) {
+	if o.Resumed() {
+		info("Resumed session %s", o.SessionID)
+		return
+	}
+	if o.Reason != "" {
+		info("Starting fresh session (%s)", o.Reason)
+	}
+}
+
+// resumeBadge renders the resume outcome as a short suffix for TUI status
+// lines: "(resumed)" when the session continued, "(fresh: <reason>)" when
+// it fell back, "" if neither applies.
+func resumeBadge(o ResumeOutcome) string {
+	if o.Resumed() {
+		return "(resumed)"
+	}
+	if o.Reason != "" {
+		return "(fresh: " + o.Reason + ")"
+	}
+	return ""
 }
 
 func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {

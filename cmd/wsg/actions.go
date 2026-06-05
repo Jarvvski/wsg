@@ -22,8 +22,9 @@ func NewActions(r *RepoContext) *WorkerActions {
 }
 
 // Send resumes worker on prompt, appending the send system prompt for fresh
-// sessions. Returns the spawned PID (0 in fg mode).
-func (a *WorkerActions) Send(worker, prompt string, fg bool) (int, error) {
+// sessions. Returns the ResumeOutcome so the caller can render whether the
+// existing session was continued or a fresh one was started.
+func (a *WorkerActions) Send(worker, prompt string, fg bool) (ResumeOutcome, error) {
 	return resumeWorker(a.repo, worker, resumeOpts{
 		Prompt:       prompt,
 		SystemPrompt: sendSystemPrompt(ghRepo(a.repo)),
@@ -34,10 +35,10 @@ func (a *WorkerActions) Send(worker, prompt string, fg bool) (int, error) {
 // Review builds a review prompt from the worker's PR (failing checks +
 // merge state) and resumes the worker on it. Errors if the worker has no
 // branch, no PR for that branch, or gh cannot be reached.
-func (a *WorkerActions) Review(worker string, fg bool) (int, error) {
+func (a *WorkerActions) Review(worker string, fg bool) (ResumeOutcome, error) {
 	prompt, err := buildWorkerReviewPrompt(a.repo, worker)
 	if err != nil {
-		return 0, err
+		return ResumeOutcome{}, err
 	}
 	return resumeWorker(a.repo, worker, resumeOpts{
 		Prompt:     prompt,

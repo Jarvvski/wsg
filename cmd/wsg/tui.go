@@ -172,7 +172,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Review failed: %v", msg.err)
 		} else {
-			m.status = fmt.Sprintf("Review dispatched for %s", displayWorker(msg.worker))
+			m.status = fmt.Sprintf("Review dispatched for %s %s", displayWorker(msg.worker), resumeBadge(msg.outcome))
 		}
 	case batchDispatchResultMsg:
 		if msg.err != nil {
@@ -211,7 +211,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Send failed: %v", msg.err)
 		} else {
-			m.status = fmt.Sprintf("Message sent to %s", displayWorker(msg.worker))
+			m.status = fmt.Sprintf("Message sent to %s %s", displayWorker(msg.worker), resumeBadge(msg.outcome))
 			m.view = viewTail
 			m.tailWorker = msg.worker
 			m.tailLines = nil
@@ -536,13 +536,15 @@ type rebaseResultMsg struct {
 }
 
 type reviewResultMsg struct {
-	worker string
-	err    error
+	worker  string
+	outcome ResumeOutcome
+	err     error
 }
 
 type sendResultMsg struct {
-	worker string
-	err    error
+	worker  string
+	outcome ResumeOutcome
+	err     error
 }
 
 type openPRResultMsg struct {
@@ -583,16 +585,16 @@ func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 	name := w.name
 	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		_, err := actions.Review(name, false)
-		return reviewResultMsg{worker: name, err: err}
+		outcome, err := actions.Review(name, false)
+		return reviewResultMsg{worker: name, outcome: outcome, err: err}
 	}
 }
 
 func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		_, err := actions.Send(workerName, prompt, false)
-		return sendResultMsg{worker: workerName, err: err}
+		outcome, err := actions.Send(workerName, prompt, false)
+		return sendResultMsg{worker: workerName, outcome: outcome, err: err}
 	}
 }
 
