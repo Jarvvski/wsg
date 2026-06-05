@@ -71,20 +71,28 @@ func saveDispatchGroup(path string, dg *DispatchGroup) error {
 	return os.Rename(tmp, path)
 }
 
-func syncExistingGroup(r *RepoContext, dgFile string) *DispatchGroup {
-	dg, err := loadDispatchGroup(dgFile)
+// LoadLiveDispatchGroup reads the group for parent off disk, reconciles its
+// sub-issue state against the worker pool and branch existence, then persists
+// the reconciled state. Returns nil if no group exists.
+func LoadLiveDispatchGroup(r *RepoContext, parent string) *DispatchGroup {
+	path := dispatchGroupFile(r, parent)
+	dg, err := loadDispatchGroup(path)
 	if err != nil {
 		return nil
 	}
-	syncGroupFromWorkers(r, dg)
-	revalidateBranches(r, dg)
-	saveDispatchGroup(dgFile, dg)
+	dg.SyncFromWorkers(r)
+	dg.RevalidateBranches(r)
+	saveDispatchGroup(path, dg)
 	return dg
 }
 
-// ── DAG operations ─────────────────────────────────────────────────
+func (dg *DispatchGroup) Save(r *RepoContext) error {
+	return saveDispatchGroup(dispatchGroupFile(r, dg.Parent), dg)
+}
 
-func readyToDispatch(dg *DispatchGroup) []string {
+// ── DAG queries (pure) ─────────────────────────────────────────────
+
+func (dg *DispatchGroup) Ready() []string {
 	var ready []string
 	for id, si := range dg.SubIssues {
 		if si.Status != "pending" {
@@ -109,7 +117,134 @@ func readyToDispatch(dg *DispatchGroup) []string {
 	return ready
 }
 
-func syncGroupFromWorkers(r *RepoContext, dg *DispatchGroup) bool {
+func (dg *DispatchGroup) MaxWaveSize() int {
+	resolved := make(map[string]bool)
+	for id, si := range dg.SubIssues {
+		if si.Status == "skipped" {
+			resolved[id] = true
+		}
+	}
+
+	maxSize := 0
+	for {
+		var wave []string
+		for id, si := range dg.SubIssues {
+			if resolved[id] || si.Status == "skipped" {
+				continue
+			}
+			allMet := true
+			for _, dep := range si.BlockedBy {
+				if !resolved[dep] {
+					allMet = false
+					break
+				}
+			}
+			if allMet {
+				wave = append(wave, id)
+			}
+		}
+		if len(wave) == 0 {
+			break
+		}
+		if len(wave) > maxSize {
+			maxSize = len(wave)
+		}
+		for _, id := range wave {
+			resolved[id] = true
+		}
+	}
+	return maxSize
+}
+
+func (dg *DispatchGroup) Terminal() bool {
+	for _, si := range dg.SubIssues {
+		if si.Status == "pending" || si.Status == "dispatched" {
+			return false
+		}
+	}
+	return true
+}
+
+func (dg *DispatchGroup) CountStatuses() (done, failed, skipped int) {
+	for _, si := range dg.SubIssues {
+		switch si.Status {
+		case "done":
+			done++
+		case "failed":
+			failed++
+		case "skipped":
+			skipped++
+		}
+	}
+	return
+}
+
+func (dg *DispatchGroup) BaseBranchesFor(ticketID string) []string {
+	si := dg.SubIssues[ticketID]
+	if si == nil || len(si.BlockedBy) == 0 {
+		return nil
+	}
+	var branches []string
+	for _, dep := range si.BlockedBy {
+		depState := dg.SubIssues[dep]
+		if depState == nil || depState.Branch == nil {
+			continue
+		}
+		branches = append(branches, *depState.Branch)
+	}
+	return branches
+}
+
+func (dg *DispatchGroup) DepContextFor(ticketID string) *DependencyContext {
+	branches := dg.BaseBranchesFor(ticketID)
+	if len(branches) == 0 {
+		return nil
+	}
+	allMain := true
+	for _, b := range branches {
+		if b != "main" {
+			allMain = false
+			break
+		}
+	}
+	if allMain {
+		return nil
+	}
+	si := dg.SubIssues[ticketID]
+	var lines []string
+	for _, dep := range si.BlockedBy {
+		depState := dg.SubIssues[dep]
+		if depState == nil || depState.Branch == nil || *depState.Branch == "main" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- Branch: %s (implements %s: \"%s\")", *depState.Branch, dep, depState.Title))
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return &DependencyContext{
+		BaseBranches: branches,
+		Context:      strings.Join(lines, "\n"),
+		PRBase:       branches[0],
+	}
+}
+
+// ── DAG mutations ──────────────────────────────────────────────────
+
+func (dg *DispatchGroup) MarkDispatched(ticketID, worker string) {
+	si := dg.SubIssues[ticketID]
+	if si == nil {
+		return
+	}
+	si.Status = "dispatched"
+	si.Worker = &worker
+	now := nowUTC()
+	si.DispatchedAt = &now
+}
+
+// ── World-touching ops ─────────────────────────────────────────────
+
+func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 	changed := false
 	for id, si := range dg.SubIssues {
 		if si.Status != "dispatched" || si.Worker == nil {
@@ -154,17 +289,7 @@ func syncGroupFromWorkers(r *RepoContext, dg *DispatchGroup) bool {
 	return changed
 }
 
-func resetWorkerForReuse(r *RepoContext, worker string) {
-	h, err := OpenWorker(r.workerStateFile(worker))
-	if err != nil {
-		h, _ = CreateIdleWorker(r.workerStateFile(worker))
-	}
-	if h != nil {
-		h.Reclaim(r, worker)
-	}
-}
-
-func revalidateBranches(r *RepoContext, dg *DispatchGroup) {
+func (dg *DispatchGroup) RevalidateBranches(r *RepoContext) {
 	for id, si := range dg.SubIssues {
 		if si.Branch == nil || *si.Branch == "main" {
 			continue
@@ -190,59 +315,69 @@ func revalidateBranches(r *RepoContext, dg *DispatchGroup) {
 	}
 }
 
-func baseBranchesForIssue(dg *DispatchGroup, ticketID string) []string {
-	si := dg.SubIssues[ticketID]
-	if si == nil || len(si.BlockedBy) == 0 {
-		return nil
+func resetWorkerForReuse(r *RepoContext, worker string) {
+	h, err := OpenWorker(r.workerStateFile(worker))
+	if err != nil {
+		h, _ = CreateIdleWorker(r.workerStateFile(worker))
 	}
-	var branches []string
-	for _, dep := range si.BlockedBy {
-		depState := dg.SubIssues[dep]
-		if depState == nil || depState.Branch == nil {
-			continue
-		}
-		branches = append(branches, *depState.Branch)
-	}
-	return branches
-}
-
-func buildDepContext(dg *DispatchGroup, ticketID string) *DependencyContext {
-	branches := baseBranchesForIssue(dg, ticketID)
-	if len(branches) == 0 {
-		return nil
-	}
-	allMain := true
-	for _, b := range branches {
-		if b != "main" {
-			allMain = false
-			break
-		}
-	}
-	if allMain {
-		return nil
-	}
-	si := dg.SubIssues[ticketID]
-	var lines []string
-	for _, dep := range si.BlockedBy {
-		depState := dg.SubIssues[dep]
-		if depState == nil || depState.Branch == nil || *depState.Branch == "main" {
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("- Branch: %s (implements %s: \"%s\")", *depState.Branch, dep, depState.Title))
-	}
-	if len(lines) == 0 {
-		return nil
-	}
-	return &DependencyContext{
-		BaseBranches: branches,
-		Context:      strings.Join(lines, "\n"),
-		PRBase:       branches[0],
+	if h != nil {
+		h.Reclaim(r, worker)
 	}
 }
 
-// ── Graph builder ──────────────────────────────────────────────────
+// ── Rendering ──────────────────────────────────────────────────────
 
-func buildDependencyGraph(r *RepoContext, parent string, opts *DispatchOpts) (*DispatchGroup, error) {
+func (dg *DispatchGroup) PrintStatus() {
+	var ids []string
+	for id := range dg.SubIssues {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	fmt.Fprintf(os.Stderr, "\n%s sub-issues:\n\n", dg.Parent)
+	fmt.Fprintf(os.Stderr, "%-12s %-12s %-12s %-40s %s\n", "TICKET", "STATUS", "WORKER", "TITLE", "BLOCKED BY")
+	fmt.Fprintf(os.Stderr, "%-12s %-12s %-12s %-40s %s\n", "------", "------", "------", "-----", "----------")
+
+	for _, id := range ids {
+		si := dg.SubIssues[id]
+
+		worker := "-"
+		if si.Worker != nil {
+			worker = displayWorker(*si.Worker)
+		}
+
+		title := si.Title
+		if len(title) > 38 {
+			title = title[:35] + "..."
+		}
+
+		blockedBy := "-"
+		if len(si.BlockedBy) > 0 {
+			blockedBy = strings.Join(si.BlockedBy, ", ")
+		}
+
+		paddedStatus := fmt.Sprintf("%-12s", si.Status)
+		switch si.Status {
+		case "pending":
+			paddedStatus = colorize(paddedStatus, colorDim)
+		case "dispatched":
+			paddedStatus = colorize(paddedStatus, colorYellow)
+		case "done":
+			paddedStatus = colorize(paddedStatus, colorGreen)
+		case "failed":
+			paddedStatus = colorize(paddedStatus, colorRed)
+		case "skipped":
+			paddedStatus = colorize(paddedStatus, colorDim)
+		}
+
+		fmt.Fprintf(os.Stderr, "%-12s %s %-12s %-40s %s\n", id, paddedStatus, worker, title, blockedBy)
+	}
+	fmt.Fprintln(os.Stderr)
+}
+
+// ── Construction ───────────────────────────────────────────────────
+
+func BuildDispatchGroup(r *RepoContext, parent string, opts *DispatchOpts) (*DispatchGroup, error) {
 	repo := ghRepo(r)
 
 	prompt := fmt.Sprintf(`Fetch the parent-child sub-issue graph for Linear issue %s.
@@ -415,13 +550,11 @@ func extractJSON(s string) string {
 // ── Orchestrated dispatch ──────────────────────────────────────────
 
 func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
-	dgFile := dispatchGroupFile(r, dg.Parent)
-
 	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
 		fatal("No pool. Run: wsg pool create --size N")
 	}
 
-	maxConc := maxWaveSize(dg)
+	maxConc := dg.MaxWaveSize()
 	idle := countIdleWorkers(r)
 	if idle < maxConc {
 		needed := maxConc - idle
@@ -432,44 +565,36 @@ func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOp
 		info("Pool ready: %d workers available", countIdleWorkers(r))
 	}
 
-	saveDispatchGroup(dgFile, dg)
+	dg.Save(r)
 	watchDispatchGroup(r, dg, opts)
 }
 
 func watchDispatchGroup(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
-	dgFile := dispatchGroupFile(r, dg.Parent)
-
 	for {
-		if syncGroupFromWorkers(r, dg) {
-			saveDispatchGroup(dgFile, dg)
+		if dg.SyncFromWorkers(r) {
+			dg.Save(r)
 		}
 
-		ready := readyToDispatch(dg)
-		for _, tid := range ready {
+		for _, tid := range dg.Ready() {
 			worker, err := claimIdleWorker(r, tid)
 			if err != nil {
 				info("No idle workers for %s, will retry next cycle", tid)
 				continue
 			}
 
-			depCtx := buildDepContext(dg, tid)
 			ticketOpts := *opts
 			ticketOpts.TicketID = tid
-			launchWorker(r, worker, &ticketOpts, depCtx)
+			launchWorker(r, worker, &ticketOpts, dg.DepContextFor(tid))
 
-			si := dg.SubIssues[tid]
-			si.Status = "dispatched"
-			si.Worker = &worker
-			now := nowUTC()
-			si.DispatchedAt = &now
+			dg.MarkDispatched(tid, worker)
 		}
 
-		saveDispatchGroup(dgFile, dg)
+		dg.Save(r)
 
-		if isGroupTerminal(dg) {
+		if dg.Terminal() {
 			fmt.Fprintln(os.Stderr)
-			printGroupStatus(dg)
-			done, failed, skipped := countGroupStatuses(dg)
+			dg.PrintStatus()
+			done, failed, skipped := dg.CountStatuses()
 			if failed > 0 {
 				info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
 			} else {
@@ -482,118 +607,6 @@ func watchDispatchGroup(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
 	}
 }
 
-// ── Helpers ────────────────────────────────────────────────────────
-
-func maxWaveSize(dg *DispatchGroup) int {
-	resolved := make(map[string]bool)
-	for id, si := range dg.SubIssues {
-		if si.Status == "skipped" {
-			resolved[id] = true
-		}
-	}
-
-	maxSize := 0
-	for {
-		var wave []string
-		for id, si := range dg.SubIssues {
-			if resolved[id] || si.Status == "skipped" {
-				continue
-			}
-			allMet := true
-			for _, dep := range si.BlockedBy {
-				if !resolved[dep] {
-					allMet = false
-					break
-				}
-			}
-			if allMet {
-				wave = append(wave, id)
-			}
-		}
-		if len(wave) == 0 {
-			break
-		}
-		if len(wave) > maxSize {
-			maxSize = len(wave)
-		}
-		for _, id := range wave {
-			resolved[id] = true
-		}
-	}
-	return maxSize
-}
-
-func isGroupTerminal(dg *DispatchGroup) bool {
-	for _, si := range dg.SubIssues {
-		if si.Status == "pending" || si.Status == "dispatched" {
-			return false
-		}
-	}
-	return true
-}
-
-func countGroupStatuses(dg *DispatchGroup) (done, failed, skipped int) {
-	for _, si := range dg.SubIssues {
-		switch si.Status {
-		case "done":
-			done++
-		case "failed":
-			failed++
-		case "skipped":
-			skipped++
-		}
-	}
-	return
-}
-
-func printGroupStatus(dg *DispatchGroup) {
-	var ids []string
-	for id := range dg.SubIssues {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	fmt.Fprintf(os.Stderr, "\n%s sub-issues:\n\n", dg.Parent)
-	fmt.Fprintf(os.Stderr, "%-12s %-12s %-12s %-40s %s\n", "TICKET", "STATUS", "WORKER", "TITLE", "BLOCKED BY")
-	fmt.Fprintf(os.Stderr, "%-12s %-12s %-12s %-40s %s\n", "------", "------", "------", "-----", "----------")
-
-	for _, id := range ids {
-		si := dg.SubIssues[id]
-
-		worker := "-"
-		if si.Worker != nil {
-			worker = displayWorker(*si.Worker)
-		}
-
-		title := si.Title
-		if len(title) > 38 {
-			title = title[:35] + "..."
-		}
-
-		blockedBy := "-"
-		if len(si.BlockedBy) > 0 {
-			blockedBy = strings.Join(si.BlockedBy, ", ")
-		}
-
-		paddedStatus := fmt.Sprintf("%-12s", si.Status)
-		switch si.Status {
-		case "pending":
-			paddedStatus = colorize(paddedStatus, colorDim)
-		case "dispatched":
-			paddedStatus = colorize(paddedStatus, colorYellow)
-		case "done":
-			paddedStatus = colorize(paddedStatus, colorGreen)
-		case "failed":
-			paddedStatus = colorize(paddedStatus, colorRed)
-		case "skipped":
-			paddedStatus = colorize(paddedStatus, colorDim)
-		}
-
-		fmt.Fprintf(os.Stderr, "%-12s %s %-12s %-40s %s\n", id, paddedStatus, worker, title, blockedBy)
-	}
-	fmt.Fprintln(os.Stderr)
-}
-
 func ptrOr(p *string, fallback string) string {
 	if p != nil && *p != "" {
 		return *p
@@ -604,11 +617,10 @@ func ptrOr(p *string, fallback string) string {
 // ── Orchestration entry point ─────────────────────────────────────
 
 func tryOrchestrate(r *RepoContext, ticket string, opts *DispatchOpts) {
-	dgFile := dispatchGroupFile(r, ticket)
-	if dg := syncExistingGroup(r, dgFile); dg != nil {
-		printGroupStatus(dg)
-		if isGroupTerminal(dg) {
-			done, failed, skipped := countGroupStatuses(dg)
+	if dg := LoadLiveDispatchGroup(r, ticket); dg != nil {
+		dg.PrintStatus()
+		if dg.Terminal() {
+			done, failed, skipped := dg.CountStatuses()
 			info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
 		} else {
 			spawnOrchestratorCLI(r, ticket, opts)
@@ -661,13 +673,11 @@ func cmdOrchestrate(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	dgFile := dispatchGroupFile(r, parent)
-
 	var dg *DispatchGroup
-	if existing := syncExistingGroup(r, dgFile); existing != nil {
+	if existing := LoadLiveDispatchGroup(r, parent); existing != nil {
 		dg = existing
 	} else {
-		dg, err = buildDependencyGraph(r, parent, &opts)
+		dg, err = BuildDispatchGroup(r, parent, &opts)
 		if err != nil {
 			fatal("Failed to build dependency graph: %v", err)
 		}

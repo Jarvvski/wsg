@@ -209,7 +209,7 @@ func TestReadyToDispatchNoDeps(t *testing.T) {
 			"AMBA-11": {Status: "pending", BlockedBy: nil},
 		},
 	}
-	ready := readyToDispatch(dg)
+	ready := dg.Ready()
 	if len(ready) != 2 {
 		t.Fatalf("got %d ready, want 2: %v", len(ready), ready)
 	}
@@ -226,7 +226,7 @@ func TestReadyToDispatchWithDeps(t *testing.T) {
 			"AMBA-12": {Status: "pending", BlockedBy: []string{"AMBA-10", "AMBA-11"}},
 		},
 	}
-	ready := readyToDispatch(dg)
+	ready := dg.Ready()
 	if len(ready) != 1 || ready[0] != "AMBA-10" {
 		t.Errorf("ready = %v, want [AMBA-10]", ready)
 	}
@@ -240,7 +240,7 @@ func TestReadyToDispatchDepsResolved(t *testing.T) {
 			"AMBA-12": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
 		},
 	}
-	ready := readyToDispatch(dg)
+	ready := dg.Ready()
 	if len(ready) != 2 {
 		t.Fatalf("got %d ready, want 2: %v", len(ready), ready)
 	}
@@ -253,7 +253,7 @@ func TestReadyToDispatchSkippedUnblocks(t *testing.T) {
 			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
 		},
 	}
-	ready := readyToDispatch(dg)
+	ready := dg.Ready()
 	if len(ready) != 1 || ready[0] != "AMBA-11" {
 		t.Errorf("ready = %v, want [AMBA-11] (skipped deps should unblock)", ready)
 	}
@@ -266,7 +266,7 @@ func TestReadyToDispatchAlreadyDispatched(t *testing.T) {
 			"AMBA-11": {Status: "done"},
 		},
 	}
-	ready := readyToDispatch(dg)
+	ready := dg.Ready()
 	if len(ready) != 0 {
 		t.Errorf("ready = %v, want [] (dispatched/done should not be ready)", ready)
 	}
@@ -279,7 +279,7 @@ func TestReadyToDispatchFailedBlocksDownstream(t *testing.T) {
 			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
 		},
 	}
-	ready := readyToDispatch(dg)
+	ready := dg.Ready()
 	if len(ready) != 0 {
 		t.Errorf("ready = %v, want [] (failed dep should block)", ready)
 	}
@@ -304,8 +304,8 @@ func TestIsGroupTerminal(t *testing.T) {
 			for i, s := range tt.statuses {
 				dg.SubIssues[fmt.Sprintf("AMBA-%d", i)] = &SubIssueState{Status: s}
 			}
-			if got := isGroupTerminal(dg); got != tt.want {
-				t.Errorf("isGroupTerminal = %v, want %v", got, tt.want)
+			if got := dg.Terminal(); got != tt.want {
+				t.Errorf("Terminal() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -322,7 +322,7 @@ func TestCountGroupStatuses(t *testing.T) {
 			"AMBA-6": {Status: "skipped"},
 		},
 	}
-	done, failed, skipped := countGroupStatuses(dg)
+	done, failed, skipped := dg.CountStatuses()
 	if done != 2 {
 		t.Errorf("done = %d, want 2", done)
 	}
@@ -385,9 +385,9 @@ func TestMaxWaveSize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := maxWaveSize(tt.dg)
+			got := tt.dg.MaxWaveSize()
 			if got != tt.want {
-				t.Errorf("maxWaveSize = %d, want %d", got, tt.want)
+				t.Errorf("MaxWaveSize() = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -405,17 +405,17 @@ func TestBaseBranchesForIssue(t *testing.T) {
 		},
 	}
 
-	branches := baseBranchesForIssue(dg, "AMBA-12")
+	branches := dg.BaseBranchesFor("AMBA-12")
 	if len(branches) != 2 {
 		t.Fatalf("got %d branches, want 2", len(branches))
 	}
 
-	noBranches := baseBranchesForIssue(dg, "AMBA-13")
+	noBranches := dg.BaseBranchesFor("AMBA-13")
 	if len(noBranches) != 0 {
 		t.Errorf("got %d branches for no-dep issue, want 0", len(noBranches))
 	}
 
-	missing := baseBranchesForIssue(dg, "AMBA-99")
+	missing := dg.BaseBranchesFor("AMBA-99")
 	if len(missing) != 0 {
 		t.Errorf("got %d branches for missing issue, want 0", len(missing))
 	}
@@ -427,7 +427,7 @@ func TestBuildDepContextNoDeps(t *testing.T) {
 			"AMBA-10": {Status: "pending"},
 		},
 	}
-	ctx := buildDepContext(dg, "AMBA-10")
+	ctx := dg.DepContextFor("AMBA-10")
 	if ctx != nil {
 		t.Errorf("expected nil for no-dep issue, got %+v", ctx)
 	}
@@ -441,7 +441,7 @@ func TestBuildDepContextAllMain(t *testing.T) {
 			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
 		},
 	}
-	ctx := buildDepContext(dg, "AMBA-11")
+	ctx := dg.DepContextFor("AMBA-11")
 	if ctx != nil {
 		t.Errorf("expected nil when all deps are on main, got %+v", ctx)
 	}
@@ -455,7 +455,7 @@ func TestBuildDepContextWithBranch(t *testing.T) {
 			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
 		},
 	}
-	ctx := buildDepContext(dg, "AMBA-11")
+	ctx := dg.DepContextFor("AMBA-11")
 	if ctx == nil {
 		t.Fatal("expected non-nil context for branch dep")
 	}
@@ -493,7 +493,7 @@ func TestSyncGroupFromWorkersCompleted(t *testing.T) {
 		},
 	}
 
-	changed := syncGroupFromWorkers(r, dg)
+	changed := dg.SyncFromWorkers(r)
 	if !changed {
 		t.Error("expected changed = true")
 	}
@@ -522,7 +522,7 @@ func TestSyncGroupFromWorkersFirstFailureRetries(t *testing.T) {
 		},
 	}
 
-	changed := syncGroupFromWorkers(r, dg)
+	changed := dg.SyncFromWorkers(r)
 	if !changed {
 		t.Error("expected changed = true")
 	}
@@ -555,7 +555,7 @@ func TestSyncGroupFromWorkersSecondFailurePermanent(t *testing.T) {
 		},
 	}
 
-	changed := syncGroupFromWorkers(r, dg)
+	changed := dg.SyncFromWorkers(r)
 	if !changed {
 		t.Error("expected changed = true")
 	}
@@ -582,7 +582,7 @@ func TestSyncGroupFromWorkersStillBusy(t *testing.T) {
 		},
 	}
 
-	changed := syncGroupFromWorkers(r, dg)
+	changed := dg.SyncFromWorkers(r)
 	if changed {
 		t.Error("expected changed = false for still-busy worker")
 	}

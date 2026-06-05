@@ -648,9 +648,8 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 				TicketID: ticket,
 				Model:    "opus",
 			}
-			dgFile := dispatchGroupFile(repo, ticket)
-			if dg := syncExistingGroup(repo, dgFile); dg != nil {
-				if !isGroupTerminal(dg) {
+			if dg := LoadLiveDispatchGroup(repo, ticket); dg != nil {
+				if !dg.Terminal() {
 					if err := spawnOrchestrator(repo, ticket, opts); err != nil {
 						return batchDispatchResultMsg{err: fmt.Errorf("orchestrate %s: %v", ticket, err)}
 					}
@@ -680,8 +679,7 @@ func ensurePoolCapacityForBatch(r *RepoContext, tickets []string) {
 	}
 	need := 0
 	for _, ticket := range tickets {
-		dgFile := dispatchGroupFile(r, ticket)
-		if dg := syncExistingGroup(r, dgFile); dg != nil && isGroupTerminal(dg) {
+		if dg := LoadLiveDispatchGroup(r, ticket); dg != nil && dg.Terminal() {
 			continue
 		}
 		need++
@@ -723,9 +721,8 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 			Model:    "opus",
 		}
 
-		dgFile := dispatchGroupFile(repo, ticket)
-		if dg := syncExistingGroup(repo, dgFile); dg != nil {
-			if !isGroupTerminal(dg) {
+		if dg := LoadLiveDispatchGroup(repo, ticket); dg != nil {
+			if !dg.Terminal() {
 				if err := spawnOrchestrator(repo, ticket, opts); err != nil {
 					return dispatchResultMsg{ticket: ticket, err: err}
 				}

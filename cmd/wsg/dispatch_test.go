@@ -117,7 +117,7 @@ func TestSyncDispatchGroup(t *testing.T) {
 	dgFile := filepath.Join(poolDir, "dispatch-amba-9.json")
 	saveDispatchGroup(dgFile, dg)
 
-	synced := syncExistingGroup(r, dgFile)
+	synced := LoadLiveDispatchGroup(r, "AMBA-9")
 	if synced == nil {
 		t.Fatal("expected non-nil group")
 	}
@@ -133,7 +133,7 @@ func TestSyncDispatchGroupMissing(t *testing.T) {
 
 	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
 
-	synced := syncExistingGroup(r, filepath.Join(poolDir, "dispatch-nope.json"))
+	synced := LoadLiveDispatchGroup(r, "NOPE-1")
 	if synced != nil {
 		t.Error("expected nil for missing group file")
 	}
