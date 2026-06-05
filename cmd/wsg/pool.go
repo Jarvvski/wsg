@@ -893,13 +893,7 @@ func cmdPoolReset(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	sf := r.workerStateFile(worker)
-	h, err := OpenWorker(sf)
-	if err != nil {
-		fatal("Worker %s not found", worker)
-	}
-
-	if err := h.Reclaim(r, worker); err != nil {
+	if err := NewActions(r).Reset(worker); err != nil {
 		fatal("Reset %s: %v", worker, err)
 	}
 	info("Reset %s to idle", worker)

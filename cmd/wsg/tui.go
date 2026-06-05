@@ -373,25 +373,17 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "Cannot dismiss: worker is busy"
 			return m, nil
 		}
-		if w.state.Status == "idle" {
-			name := w.name
-			p, err := OpenPool(m.repo)
-			if err != nil {
-				m.status = fmt.Sprintf("Dismiss failed: %v", err)
-				return m, nil
-			}
-			size, err := p.Remove(name)
-			if err != nil {
-				m.status = fmt.Sprintf("Dismiss failed: %v", err)
-				return m, nil
-			}
-			m.loadWorkers()
-			m.status = fmt.Sprintf("Dismissed %s (pool size: %d)", displayWorker(name), size)
+		size, err := NewActions(m.repo).Dismiss(w.name)
+		if err != nil {
+			m.status = fmt.Sprintf("Dismiss failed: %v", err)
 			return m, nil
 		}
-		sf := m.repo.workerStateFile(w.name)
-		if h, err := OpenWorker(sf); err == nil {
-			h.Reset()
+		if size >= 0 {
+			m.loadWorkers()
+			m.status = fmt.Sprintf("Dismissed %s (pool size: %d)", displayWorker(w.name), size)
+			return m, nil
+		}
+		if h, err := OpenWorker(m.repo.workerStateFile(w.name)); err == nil {
 			w.state = h.State()
 		}
 		w.lastActivity = ""
@@ -565,80 +557,42 @@ type killResultMsg struct {
 
 func (m tuiModel) doRebase(w *tuiWorker) tea.Cmd {
 	name := w.name
-	branch := *w.state.BranchName
-	wspath := m.repo.workerDir(name)
+	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		if err := jjRebase(wspath, branch, "main"); err != nil {
-			return rebaseResultMsg{worker: name, err: err}
-		}
-		if err := jjPush(wspath, branch); err != nil {
-			jjOpUndo(wspath)
-			return rebaseResultMsg{worker: name, err: fmt.Errorf("rebase caused conflicts, reverted - use [r]eview instead")}
-		}
-		return rebaseResultMsg{worker: name}
+		return rebaseResultMsg{worker: name, err: actions.Rebase(name)}
 	}
 }
 
 func (m tuiModel) doOpenPR(w *tuiWorker) tea.Cmd {
 	name := w.name
-	branch := *w.state.BranchName
-	repo := ghRepo(m.repo)
+	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		if repo == "" {
-			return openPRResultMsg{worker: name, err: fmt.Errorf("cannot detect GitHub repo")}
-		}
-		_, err := run("", "gh", "-R", repo, "pr", "view", branch, "--web")
-		if err != nil {
-			return openPRResultMsg{worker: name, err: fmt.Errorf("no PR for branch %s", branch)}
-		}
-		return openPRResultMsg{worker: name}
+		return openPRResultMsg{worker: name, err: actions.OpenPR(name)}
 	}
 }
 
 func (m tuiModel) doKill(w *tuiWorker) tea.Cmd {
 	name := w.name
-	r := m.repo
+	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		h, err := OpenWorker(r.workerStateFile(name))
-		if err != nil {
-			return killResultMsg{worker: name, err: err}
-		}
-		if err := h.Reclaim(r, name); err != nil {
-			return killResultMsg{worker: name, err: err}
-		}
-		return killResultMsg{worker: name}
+		return killResultMsg{worker: name, err: actions.Reset(name)}
 	}
 }
 
 func (m tuiModel) doReview(w *tuiWorker) tea.Cmd {
 	name := w.name
-	repo := m.repo
+	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		prompt, err := buildWorkerReviewPrompt(repo, name)
-		if err != nil {
-			return reviewResultMsg{worker: name, err: err}
-		}
-		_, err = resumeWorker(repo, name, resumeOpts{
-			Prompt: prompt,
-		})
-		if err != nil {
-			return reviewResultMsg{worker: name, err: err}
-		}
-		return reviewResultMsg{worker: name}
+		_, err := actions.Review(name, false)
+		return reviewResultMsg{worker: name, err: err}
 	}
 }
 
 func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
-	repo := m.repo
+	actions := NewActions(m.repo)
 	return func() tea.Msg {
-		_, err := resumeWorker(repo, workerName, resumeOpts{
-			Prompt:       prompt,
-			SystemPrompt: sendSystemPrompt(ghRepo(repo)),
-		})
-		if err != nil {
-			return sendResultMsg{worker: workerName, err: err}
-		}
-		return sendResultMsg{worker: workerName}
+		_, err := actions.Send(workerName, prompt, false)
+		return sendResultMsg{worker: workerName, err: err}
 	}
 }
 

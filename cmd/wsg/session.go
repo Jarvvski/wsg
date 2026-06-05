@@ -85,11 +85,7 @@ func cmdSend(args []string) {
 	worker = resolveWorker(worker)
 	info("Sending to %s...", displayWorker(worker))
 
-	pid, err := resumeWorker(r, worker, resumeOpts{
-		Prompt:       prompt,
-		SystemPrompt: sendSystemPrompt(ghRepo(r)),
-		Foreground:   fg,
-	})
+	pid, err := NewActions(r).Send(worker, prompt, fg)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -134,15 +130,7 @@ func cmdReview(args []string) {
 
 	worker = resolveWorker(worker)
 
-	prompt, err := buildWorkerReviewPrompt(r, worker)
-	if err != nil {
-		fatal("%v", err)
-	}
-
-	pid, err := resumeWorker(r, worker, resumeOpts{
-		Prompt:     prompt,
-		Foreground: fg,
-	})
+	pid, err := NewActions(r).Review(worker, fg)
 	if err != nil {
 		fatal("%v", err)
 	}

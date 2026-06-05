@@ -1,0 +1,126 @@
+package main
+
+import "fmt"
+
+// WorkerActions is the verb layer the CLI's cmd* functions and the TUI's
+// tea.Cmd closures share. Each method takes the worker name as the unit of
+// addressing and either mutates the worker state file or launches claude
+// against it. The CLI parses os.Args then calls an action; the TUI captures
+// the action inside a tea.Cmd closure and translates the result into a
+// *ResultMsg.
+//
+// Foreground/background is a per-call parameter on actions that launch a
+// process. The CLI plumbs it through resolveForeground at the parse edge;
+// the TUI always runs background. Neither path looks at config inside the
+// action - actions trust what they are given.
+type WorkerActions struct {
+	repo *RepoContext
+}
+
+func NewActions(r *RepoContext) *WorkerActions {
+	return &WorkerActions{repo: r}
+}
+
+// Send resumes worker on prompt, appending the send system prompt for fresh
+// sessions. Returns the spawned PID (0 in fg mode).
+func (a *WorkerActions) Send(worker, prompt string, fg bool) (int, error) {
+	return resumeWorker(a.repo, worker, resumeOpts{
+		Prompt:       prompt,
+		SystemPrompt: sendSystemPrompt(ghRepo(a.repo)),
+		Foreground:   fg,
+	})
+}
+
+// Review builds a review prompt from the worker's PR (failing checks +
+// merge state) and resumes the worker on it. Errors if the worker has no
+// branch, no PR for that branch, or gh cannot be reached.
+func (a *WorkerActions) Review(worker string, fg bool) (int, error) {
+	prompt, err := buildWorkerReviewPrompt(a.repo, worker)
+	if err != nil {
+		return 0, err
+	}
+	return resumeWorker(a.repo, worker, resumeOpts{
+		Prompt:     prompt,
+		Foreground: fg,
+	})
+}
+
+// Reset returns a worker to idle: kills any live PID, clears state, and
+// fires an async `jj restore && jj new main` in the workspace. Same as
+// the [K]ill verb in the TUI.
+func (a *WorkerActions) Reset(worker string) error {
+	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	if err != nil {
+		return err
+	}
+	return h.Reclaim(a.repo, worker)
+}
+
+// OpenPR opens the GitHub PR for the worker's branch in a browser.
+func (a *WorkerActions) OpenPR(worker string) error {
+	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	if err != nil {
+		return err
+	}
+	ws := h.State()
+	if ws.BranchName == nil || *ws.BranchName == "" {
+		return fmt.Errorf("worker %s has no branch", worker)
+	}
+	repo := ghRepo(a.repo)
+	if repo == "" {
+		return fmt.Errorf("cannot detect GitHub repo")
+	}
+	if _, err := run("", "gh", "-R", repo, "pr", "view", *ws.BranchName, "--web"); err != nil {
+		return fmt.Errorf("no PR for branch %s", *ws.BranchName)
+	}
+	return nil
+}
+
+// Rebase rebases the worker's branch onto main and pushes. On conflict the
+// rebase is undone via `jj op undo` and an error is returned instructing
+// the caller to review instead.
+func (a *WorkerActions) Rebase(worker string) error {
+	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	if err != nil {
+		return err
+	}
+	ws := h.State()
+	if ws.BranchName == nil || *ws.BranchName == "" {
+		return fmt.Errorf("worker %s has no branch", worker)
+	}
+	wspath := a.repo.workerDir(worker)
+	if err := jjRebase(wspath, *ws.BranchName, "main"); err != nil {
+		return err
+	}
+	if err := jjPush(wspath, *ws.BranchName); err != nil {
+		jjOpUndo(wspath)
+		return fmt.Errorf("rebase caused conflicts, reverted - use [r]eview instead")
+	}
+	return nil
+}
+
+// Dismiss removes worker from the pool when idle, or resets it to idle
+// when in a terminal state (done/failed). Errors on busy. Returns the new
+// pool size when the worker was removed, or -1 if the worker was only
+// reset (size unchanged).
+func (a *WorkerActions) Dismiss(worker string) (int, error) {
+	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	if err != nil {
+		return -1, err
+	}
+	switch h.State().Status {
+	case "busy":
+		return -1, fmt.Errorf("worker %s is busy", worker)
+	case "idle":
+		p, err := OpenPool(a.repo)
+		if err != nil {
+			return -1, err
+		}
+		return p.Remove(worker)
+	default:
+		if err := h.Reset(); err != nil {
+			return -1, err
+		}
+		return -1, nil
+	}
+}
