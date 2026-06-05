@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -97,7 +96,8 @@ func cmdDispatch(args []string) {
 		fatal("Usage: wsg dispatch <TICKET>... [--fg|--bg] [--model MODEL]")
 	}
 
-	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
+	p, err := OpenPool(r)
+	if err != nil {
 		fatal("No pool. Run: wsg pool create --size N")
 	}
 
@@ -106,19 +106,20 @@ func cmdDispatch(args []string) {
 		return
 	}
 
-	idle := countIdleWorkers(r)
+	snap := p.Snapshot()
 	need := len(tickets)
-	if idle < need {
-		cfg, _ := loadPoolConfig(r.poolConfigFile())
-		newSize := cfg.Size + (need - idle)
-		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", idle, need, newSize) {
-			cmdPoolResize([]string{strconv.Itoa(newSize)})
+	if snap.Idle < need {
+		newSize := snap.Size + (need - snap.Idle)
+		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", snap.Idle, need, newSize) {
+			if err := p.Resize(newSize); err != nil {
+				fatal("Resize: %v", err)
+			}
 		}
 	}
 
 	dispatched := 0
 	for _, tid := range tickets {
-		worker, err := claimIdleWorker(r, tid)
+		worker, err := p.Claim(tid)
 		if err != nil {
 			if dispatched > 0 {
 				info("No more idle workers. Dispatched %d/%d ticket(s).", dispatched, need)
@@ -139,7 +140,8 @@ func dispatchAll(opts *DispatchOpts) {
 		fatal("Not in a jj repo")
 	}
 
-	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
+	p, err := OpenPool(r)
+	if err != nil {
 		fatal("No pool. Run: wsg pool create --size N")
 	}
 
@@ -162,19 +164,20 @@ func dispatchAll(opts *DispatchOpts) {
 		return
 	}
 
-	idle := countIdleWorkers(r)
+	snap := p.Snapshot()
 	need := len(tickets)
-	if idle < need {
-		cfg, _ := loadPoolConfig(r.poolConfigFile())
-		newSize := cfg.Size + (need - idle)
-		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", idle, need, newSize) {
-			cmdPoolResize([]string{strconv.Itoa(newSize)})
+	if snap.Idle < need {
+		newSize := snap.Size + (need - snap.Idle)
+		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", snap.Idle, need, newSize) {
+			if err := p.Resize(newSize); err != nil {
+				fatal("Resize: %v", err)
+			}
 		}
 	}
 
 	count := 0
 	for _, tid := range tickets {
-		worker, err := claimIdleWorker(r, tid)
+		worker, err := p.Claim(tid)
 		if err != nil {
 			info("No more idle workers. Dispatched %d/%d ticket(s).", count, need)
 			return

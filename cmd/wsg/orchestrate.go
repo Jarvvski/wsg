@@ -550,33 +550,35 @@ func extractJSON(s string) string {
 // ── Orchestrated dispatch ──────────────────────────────────────────
 
 func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
-	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
+	p, err := OpenPool(r)
+	if err != nil {
 		fatal("No pool. Run: wsg pool create --size N")
 	}
 
 	maxConc := dg.MaxWaveSize()
-	idle := countIdleWorkers(r)
-	if idle < maxConc {
-		needed := maxConc - idle
-		cfg, _ := loadPoolConfig(r.poolConfigFile())
-		newSize := cfg.Size + needed
-		info("Auto-expanding pool from %d to %d for wave parallelism (%d idle, need %d)", cfg.Size, newSize, idle, maxConc)
-		cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
-		info("Pool ready: %d workers available", countIdleWorkers(r))
+	snap := p.Snapshot()
+	if snap.Idle < maxConc {
+		needed := maxConc - snap.Idle
+		newSize := snap.Size + needed
+		info("Auto-expanding pool from %d to %d for wave parallelism (%d idle, need %d)", snap.Size, newSize, snap.Idle, maxConc)
+		if err := p.Resize(newSize); err != nil {
+			fatal("Resize: %v", err)
+		}
+		info("Pool ready: %d workers available", p.Snapshot().Idle)
 	}
 
 	dg.Save(r)
-	watchDispatchGroup(r, dg, opts)
+	watchDispatchGroup(r, p, dg, opts)
 }
 
-func watchDispatchGroup(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
+func watchDispatchGroup(r *RepoContext, p *Pool, dg *DispatchGroup, opts *DispatchOpts) {
 	for {
 		if dg.SyncFromWorkers(r) {
 			dg.Save(r)
 		}
 
 		for _, tid := range dg.Ready() {
-			worker, err := claimIdleWorker(r, tid)
+			worker, err := p.Claim(tid)
 			if err != nil {
 				info("No idle workers for %s, will retry next cycle", tid)
 				continue
@@ -684,16 +686,18 @@ func cmdOrchestrate(args []string) {
 		if dg == nil {
 			// No sub-issues - fall back to single-ticket dispatch
 			opts.TicketID = parent
-			worker, werr := claimIdleWorker(r, parent)
+			p, perr := OpenPool(r)
+			if perr != nil {
+				fatal("No pool. Run: wsg pool create --size N")
+			}
+			worker, werr := p.Claim(parent)
 			if werr != nil {
-				cfg, cfgErr := loadPoolConfig(r.poolConfigFile())
-				if cfgErr != nil {
-					fatal("No pool. Run: wsg pool create --size N")
-				}
-				newSize := cfg.Size + 1
+				newSize := p.Config().Size + 1
 				info("Auto-expanding pool to %d for %s", newSize, parent)
-				cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
-				worker, werr = claimIdleWorker(r, parent)
+				if rerr := p.Resize(newSize); rerr != nil {
+					fatal("Resize: %v", rerr)
+				}
+				worker, werr = p.Claim(parent)
 				if werr != nil {
 					fatal("No idle workers for %s", parent)
 				}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -394,34 +395,6 @@ func TestElapsedDisplay(t *testing.T) {
 	}
 }
 
-func TestFindIdleWorker(t *testing.T) {
-	dir := t.TempDir()
-	poolDir := filepath.Join(dir, ".jj", "pool")
-	os.MkdirAll(poolDir, 0755)
-
-	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
-
-	cfg := &PoolConfig{
-		Size:    2,
-		Workers: []string{"worker-1", "worker-2"},
-	}
-	savePoolConfig(r.poolConfigFile(), cfg)
-
-	busy := &WorkerState{Status: "busy"}
-	saveWorkerState(filepath.Join(poolDir, "worker-1.json"), busy)
-
-	idle := newIdleWorkerState()
-	saveWorkerState(filepath.Join(poolDir, "worker-2.json"), idle)
-
-	got, err := findIdleWorker(r)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "worker-2" {
-		t.Errorf("got %q, want worker-2", got)
-	}
-}
-
 func strPtr(s string) *string { return &s }
 
 // ── WorkerHandle tests ────────────────────────────────────────────
@@ -775,5 +748,226 @@ func TestHandleReset(t *testing.T) {
 	loaded, _ := loadWorkerState(path)
 	if loaded.Status != "idle" {
 		t.Errorf("persisted status = %q, want idle", loaded.Status)
+	}
+}
+
+// ── Pool tests ─────────────────────────────────────────────────────
+
+// setupPoolWithStates builds a pool config + per-worker state files in a
+// fresh tempdir and returns a *RepoContext pointing at it. workers is keyed
+// by name with that worker's initial state.
+func setupPoolWithStates(t *testing.T, workers map[string]*WorkerState) *RepoContext {
+	t.Helper()
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	if err := os.MkdirAll(poolDir, 0755); err != nil {
+		t.Fatalf("mkdir pool: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	names := make([]string, 0, len(workers))
+	for name := range workers {
+		names = append(names, name)
+	}
+	// Sort for deterministic Workers ordering (map iteration is random).
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+
+	cfg := &PoolConfig{
+		Size:    len(names),
+		Workers: names,
+	}
+	if err := savePoolConfig(r.poolConfigFile(), cfg); err != nil {
+		t.Fatalf("save pool config: %v", err)
+	}
+	for name, ws := range workers {
+		if err := saveWorkerState(r.workerStateFile(name), ws); err != nil {
+			t.Fatalf("save worker %s: %v", name, err)
+		}
+	}
+	return r
+}
+
+func TestOpenPoolMissingErrors(t *testing.T) {
+	dir := t.TempDir()
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	if _, err := OpenPool(r); err == nil {
+		t.Fatal("expected error for missing pool")
+	}
+}
+
+func TestPoolSnapshotCountsByStatus(t *testing.T) {
+	ticket := "AMBA-42"
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": {Status: "busy", Ticket: &ticket},
+		"worker-3": {Status: "done"},
+		"worker-4": {Status: "failed"},
+	})
+
+	p, err := OpenPool(r)
+	if err != nil {
+		t.Fatalf("OpenPool: %v", err)
+	}
+	snap := p.Snapshot()
+	if snap.Size != 4 {
+		t.Errorf("Size = %d, want 4", snap.Size)
+	}
+	if snap.Idle != 1 || snap.Busy != 1 || snap.Done != 1 || snap.Failed != 1 {
+		t.Errorf("counts = (idle=%d busy=%d done=%d failed=%d), want all 1", snap.Idle, snap.Busy, snap.Done, snap.Failed)
+	}
+}
+
+func TestPoolClaimMarksWorkerBusyWithTicket(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+
+	got, err := p.Claim("AMBA-99")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if got != "worker-1" {
+		t.Errorf("claimed %q, want worker-1", got)
+	}
+
+	ws, _ := loadWorkerState(r.workerStateFile("worker-1"))
+	if ws.Status != "busy" {
+		t.Errorf("status = %q, want busy", ws.Status)
+	}
+	if ws.Ticket == nil || *ws.Ticket != "AMBA-99" {
+		t.Errorf("ticket = %v, want AMBA-99", ws.Ticket)
+	}
+}
+
+func TestPoolClaimNoIdleErrors(t *testing.T) {
+	ticket := "AMBA-1"
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": {Status: "busy", Ticket: &ticket},
+	})
+	p, _ := OpenPool(r)
+	if _, err := p.Claim("AMBA-2"); err == nil {
+		t.Fatal("expected no-idle error")
+	}
+}
+
+func TestPoolRemoveDropsWorkerAndShrinksSize(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+
+	size, err := p.Remove("worker-2")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if size != 1 {
+		t.Errorf("size = %d, want 1", size)
+	}
+
+	cfg, _ := loadPoolConfig(r.poolConfigFile())
+	if len(cfg.Workers) != 1 || cfg.Workers[0] != "worker-1" {
+		t.Errorf("cfg.Workers = %v, want [worker-1]", cfg.Workers)
+	}
+	if _, err := os.Stat(r.workerStateFile("worker-2")); !os.IsNotExist(err) {
+		t.Errorf("worker-2 state file should be gone, stat err = %v", err)
+	}
+}
+
+func TestPoolRemoveBusyErrors(t *testing.T) {
+	ticket := "AMBA-1"
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": {Status: "busy", Ticket: &ticket},
+	})
+	p, _ := OpenPool(r)
+	if _, err := p.Remove("worker-1"); err == nil {
+		t.Fatal("expected busy error")
+	}
+}
+
+// TestPoolClaimSerialisesWithShrink is the regression test for the resize-
+// vs-claim race the Pool aggregate was introduced to fix. The setup pits
+// the two paths against the SAME idle worker: with the head two workers
+// already busy, Claim wants worker-3 (first idle from head) and Resize(2)
+// wants worker-3 (last idle when scanning from tail toward newSize). If
+// Resize takes no lock (the pre-Pool bug), the window between its idle-
+// snapshot and its cfg write lets Claim mark worker-3 busy; Resize then
+// tears the workspace down and writes cfg without it, leaving an orphan
+// busy state file pointing at a deleted workspace.
+//
+// Under the lock the two paths serialise: whichever wins commits cleanly,
+// the other observes the new state (Resize fails "cannot shrink", or
+// Claim fails "no idle workers"). The invariant: whenever Claim returns
+// a worker, that worker is still in cfg.Workers and still busy with the
+// test ticket.
+func TestPoolClaimSerialisesWithShrink(t *testing.T) {
+	busyTicket := "AMBA-busy"
+	const rounds = 50
+	for round := 0; round < rounds; round++ {
+		r := setupPoolWithStates(t, map[string]*WorkerState{
+			"worker-1": {Status: "busy", Ticket: &busyTicket},
+			"worker-2": {Status: "busy", Ticket: &busyTicket},
+			"worker-3": newIdleWorkerState(),
+			"worker-4": newIdleWorkerState(),
+		})
+
+		// Pre-create workspace dirs so tearDownWorker's stat finds them.
+		for _, w := range []string{"worker-3", "worker-4"} {
+			if err := os.MkdirAll(r.workerDir(w), 0755); err != nil {
+				t.Fatalf("mkdir worker dir: %v", err)
+			}
+		}
+
+		// Independent Pool handles to mimic two processes contending.
+		p1, _ := OpenPool(r)
+		p2, _ := OpenPool(r)
+
+		var claimedWorker string
+		var claimErr, resizeErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			claimedWorker, claimErr = p1.Claim("AMBA-RACE")
+		}()
+		go func() {
+			defer wg.Done()
+			resizeErr = p2.Resize(2)
+		}()
+		wg.Wait()
+
+		cfg, _ := loadPoolConfig(r.poolConfigFile())
+
+		if claimErr == nil {
+			// Claim won (at least for one of the idle workers). The
+			// worker must still be a member of the pool.
+			stillPresent := false
+			for _, w := range cfg.Workers {
+				if w == claimedWorker {
+					stillPresent = true
+					break
+				}
+			}
+			if !stillPresent {
+				t.Fatalf("round %d: claimed %q removed by concurrent shrink (cfg.Workers=%v, resizeErr=%v)", round, claimedWorker, cfg.Workers, resizeErr)
+			}
+
+			ws, err := loadWorkerState(r.workerStateFile(claimedWorker))
+			if err != nil {
+				t.Fatalf("round %d: claimed worker state file gone: %v", round, err)
+			}
+			if ws.Status != "busy" || ws.Ticket == nil || *ws.Ticket != "AMBA-RACE" {
+				t.Errorf("round %d: claimed %q state = %+v, want busy AMBA-RACE", round, claimedWorker, ws)
+			}
+		}
+		// If Claim errored, Resize won the lock first - that's a valid
+		// outcome; we don't assert anything about its specific shape.
 	}
 }

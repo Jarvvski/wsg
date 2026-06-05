@@ -353,79 +353,326 @@ func resolveWorkerBranch(r *RepoContext, worker string, ws *WorkerState) {
 	}
 }
 
-func countIdleWorkers(r *RepoContext) int {
+// ── Pool ──────────────────────────────────────────────────────────
+
+// Pool is the aggregate owning .jj/pool.json and the pool mutation lock.
+// All state-changing operations (Claim, Resize, Remove, Destroy) serialise
+// through withLock so a shrink can no longer remove a worker that a
+// concurrent Claim has just marked busy. Read paths (Snapshot, Config)
+// take no lock and may return a slightly stale view; the next mutation
+// reloads under lock and acts on fresh state.
+type Pool struct {
+	repo *RepoContext
+	cfg  *PoolConfig
+}
+
+// PoolSnapshot is a moment-in-time view: cfg fields plus a live count of
+// each worker's status (reconciled against PIDs via LoadLiveWorker).
+type PoolSnapshot struct {
+	Size    int
+	Workers []string
+	Idle    int
+	Busy    int
+	Done    int
+	Failed  int
+}
+
+// OpenPool reads .jj/pool.json. Returns an error if no pool exists.
+func OpenPool(r *RepoContext) (*Pool, error) {
 	cfg, err := loadPoolConfig(r.poolConfigFile())
 	if err != nil {
-		return 0
+		return nil, err
 	}
-	count := 0
-	for _, worker := range cfg.Workers {
-		ws, err := loadWorkerState(r.workerStateFile(worker))
+	return &Pool{repo: r, cfg: cfg}, nil
+}
+
+// CreatePool initialises an empty pool config and ensures the pool dir
+// exists. Used by `wsg pool create N` before a Resize grows it to N.
+func CreatePool(r *RepoContext) (*Pool, error) {
+	if err := os.MkdirAll(r.poolDir(), 0755); err != nil {
+		return nil, fmt.Errorf("create pool dir: %w", err)
+	}
+	cfg := &PoolConfig{
+		Size:      0,
+		GHRepo:    ghRepo(r),
+		Workers:   []string{},
+		CreatedAt: nowUTC(),
+	}
+	if err := savePoolConfig(r.poolConfigFile(), cfg); err != nil {
+		return nil, err
+	}
+	return &Pool{repo: r, cfg: cfg}, nil
+}
+
+// Config returns the in-memory pool config. The view is fresh as of the
+// last OpenPool / successful mutation; concurrent processes may have
+// changed disk state since.
+func (p *Pool) Config() *PoolConfig {
+	return p.cfg
+}
+
+// Snapshot reads every worker state file, reconciling dead-busy entries
+// via LoadLiveWorker, and returns the live counts. Does not take the
+// lock - the result reflects the moment of read.
+func (p *Pool) Snapshot() *PoolSnapshot {
+	snap := &PoolSnapshot{
+		Size:    p.cfg.Size,
+		Workers: append([]string(nil), p.cfg.Workers...),
+	}
+	for _, name := range p.cfg.Workers {
+		h, err := LoadLiveWorker(p.repo, name)
 		if err != nil {
 			continue
 		}
-		if ws.Status == "idle" {
-			count++
+		switch h.State().Status {
+		case "idle":
+			snap.Idle++
+		case "busy":
+			snap.Busy++
+		case "done":
+			snap.Done++
+		case "failed":
+			snap.Failed++
 		}
 	}
-	return count
+	return snap
 }
 
-func findIdleWorker(r *RepoContext) (string, error) {
-	cfg, err := loadPoolConfig(r.poolConfigFile())
-	if err != nil {
-		return "", err
-	}
-	for _, worker := range cfg.Workers {
-		ws, err := loadWorkerState(r.workerStateFile(worker))
-		if err != nil {
-			continue
-		}
-		if ws.Status == "idle" {
-			return worker, nil
-		}
-	}
-	return "", fmt.Errorf("no idle workers")
-}
-
-// claimIdleWorker atomically picks the first idle worker and marks it busy
-// with the dispatch metadata for ticket. Concurrent dispatchers serialise on
-// a pool-wide flock, so two callers cannot claim the same worker.
-func claimIdleWorker(r *RepoContext, ticket string) (string, error) {
-	lockPath := filepath.Join(r.poolDir(), ".dispatch.lock")
+// withLock acquires the pool mutation lock, reloads cfg from disk so the
+// mutation sees the latest state from any concurrent process, runs fn,
+// and releases. All mutating Pool operations go through this. The lock
+// file (.dispatch.lock) keeps its name for compatibility with any pool
+// that already has a stale lock file in place; renaming would create a
+// window where holders of the old and new names both think they own it.
+func (p *Pool) withLock(fn func() error) error {
+	lockPath := filepath.Join(p.repo.poolDir(), ".dispatch.lock")
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return "", fmt.Errorf("open dispatch lock: %w", err)
+		return fmt.Errorf("open pool lock: %w", err)
 	}
 	defer lf.Close()
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		return "", fmt.Errorf("flock dispatch lock: %w", err)
+		return fmt.Errorf("flock pool lock: %w", err)
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 
-	cfg, err := loadPoolConfig(r.poolConfigFile())
+	cfg, err := loadPoolConfig(p.repo.poolConfigFile())
+	if err != nil {
+		return fmt.Errorf("reload pool config: %w", err)
+	}
+	p.cfg = cfg
+	return fn()
+}
+
+// Claim atomically picks the first idle worker and marks it busy with
+// ticket. Serialises against concurrent Claim, Resize, Remove.
+func (p *Pool) Claim(ticket string) (string, error) {
+	var picked string
+	err := p.withLock(func() error {
+		ticketLower := strings.ToLower(ticket)
+		poolDir := p.repo.poolDir()
+		for _, worker := range p.cfg.Workers {
+			sf := p.repo.workerStateFile(worker)
+			ws, err := loadWorkerState(sf)
+			if err != nil {
+				continue
+			}
+			if ws.Status != "idle" {
+				continue
+			}
+			logFile := filepath.Join(poolDir, worker+".log")
+			ws.MarkDispatched(ticket, logFile, ticketLower)
+			if err := saveWorkerState(sf, ws); err != nil {
+				return fmt.Errorf("save worker state: %w", err)
+			}
+			picked = worker
+			return nil
+		}
+		return fmt.Errorf("no idle workers")
+	})
 	if err != nil {
 		return "", err
 	}
+	return picked, nil
+}
+
+// Resize grows or shrinks the pool under the lock. Grow adds workers in
+// parallel via jj workspace add; shrink removes idle/done/failed workers
+// from the tail. Shrink fails (without changing state) if not enough
+// workers are removable.
+func (p *Pool) Resize(newSize int) error {
+	return p.withLock(func() error {
+		oldSize := p.cfg.Size
+		if newSize == oldSize {
+			info("Pool is already size %d", oldSize)
+			return nil
+		}
+		if newSize > oldSize {
+			return p.grow(newSize)
+		}
+		return p.shrink(newSize)
+	})
+}
+
+// grow adds (newSize - oldSize) workers. Caller holds the lock.
+func (p *Pool) grow(newSize int) error {
+	r := p.repo
 	poolDir := r.poolDir()
-	ticketLower := strings.ToLower(ticket)
-	for _, worker := range cfg.Workers {
-		sf := r.workerStateFile(worker)
-		ws, err := loadWorkerState(sf)
-		if err != nil {
-			continue
+	oldSize := p.cfg.Size
+	var wg sync.WaitGroup
+	for i := 0; i < newSize-oldSize; i++ {
+		name := generateWorkerName()
+		wspath := r.workerDir(name)
+		if _, err := run(r.Root, "jj", "workspace", "add", wspath); err != nil {
+			return fmt.Errorf("create %s: %w", name, err)
 		}
-		if ws.Status != "idle" {
-			continue
-		}
-		logFile := filepath.Join(poolDir, worker+".log")
-		ws.MarkDispatched(ticket, logFile, ticketLower)
-		if err := saveWorkerState(sf, ws); err != nil {
-			return "", fmt.Errorf("save worker state: %w", err)
-		}
-		return worker, nil
+		p.cfg.Workers = append(p.cfg.Workers, name)
+		cacheAddEntry(r.cacheFile(), name, wspath)
+		wg.Add(1)
+		go func(name, wspath string) {
+			defer wg.Done()
+			copyEnvFile(r.Root, wspath)
+			copySynapseClone(r.Root, wspath)
+			CreateIdleWorker(filepath.Join(poolDir, name+".json"))
+		}(name, wspath)
+		info("  Created %s", name)
 	}
-	return "", fmt.Errorf("no idle workers")
+	wg.Wait()
+	p.cfg.Size = newSize
+	if err := savePoolConfig(r.poolConfigFile(), p.cfg); err != nil {
+		return err
+	}
+	info("Pool expanded from %d to %d", oldSize, newSize)
+	return nil
+}
+
+// shrink drops workers from the tail. Caller holds the lock. Only
+// removes workers in a non-busy state; errors if there aren't enough.
+func (p *Pool) shrink(newSize int) error {
+	r := p.repo
+	poolDir := r.poolDir()
+	oldSize := p.cfg.Size
+
+	nonBusy := 0
+	var removable []string
+	for i := len(p.cfg.Workers) - 1; i >= newSize; i-- {
+		name := p.cfg.Workers[i]
+		sf := filepath.Join(poolDir, name+".json")
+		if _, err := os.Stat(sf); os.IsNotExist(err) {
+			removable = append(removable, name)
+			continue
+		}
+		h, err := LoadLiveWorker(r, name)
+		if err != nil {
+			removable = append(removable, name)
+			continue
+		}
+		s := h.State().Status
+		if s == "idle" || s == "done" || s == "failed" {
+			removable = append(removable, name)
+		} else {
+			nonBusy++
+		}
+	}
+
+	toRemove := oldSize - newSize
+	if len(removable) < toRemove {
+		minSize := oldSize - len(removable)
+		return fmt.Errorf("cannot shrink to %d: %d worker(s) busy.\nMinimum safe size is %d. Use 'wsg pool list' to see status", newSize, nonBusy, minSize)
+	}
+
+	removed := make(map[string]bool)
+	for _, name := range removable {
+		p.tearDownWorker(name)
+		removed[name] = true
+		info("  Removed %s", name)
+	}
+
+	remaining := make([]string, 0, newSize)
+	for _, w := range p.cfg.Workers {
+		if !removed[w] {
+			remaining = append(remaining, w)
+		}
+	}
+	p.cfg.Workers = remaining
+	p.cfg.Size = newSize
+	if err := savePoolConfig(r.poolConfigFile(), p.cfg); err != nil {
+		return err
+	}
+	info("Pool shrunk from %d to %d", oldSize, newSize)
+	return nil
+}
+
+// Remove tears down a single non-busy worker and updates cfg. Returns
+// the new pool size.
+func (p *Pool) Remove(worker string) (int, error) {
+	var newSize int
+	err := p.withLock(func() error {
+		idx := -1
+		for i, w := range p.cfg.Workers {
+			if w == worker {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return fmt.Errorf("worker %s not in pool", worker)
+		}
+		if h, err := LoadLiveWorker(p.repo, worker); err == nil {
+			if h.State().Status == "busy" {
+				return fmt.Errorf("worker %s is busy. Reset it first: wsg pool reset %s", worker, worker)
+			}
+		}
+		p.tearDownWorker(worker)
+		p.cfg.Workers = append(p.cfg.Workers[:idx], p.cfg.Workers[idx+1:]...)
+		p.cfg.Size = len(p.cfg.Workers)
+		if err := savePoolConfig(p.repo.poolConfigFile(), p.cfg); err != nil {
+			return err
+		}
+		newSize = p.cfg.Size
+		return nil
+	})
+	return newSize, err
+}
+
+// Destroy kills any live worker processes, tears down every worker's
+// workspace + state, and removes the pool directory and config. Best-
+// effort: a worker whose PID is already gone is skipped silently.
+func (p *Pool) Destroy() error {
+	return p.withLock(func() error {
+		var wg sync.WaitGroup
+		for _, worker := range p.cfg.Workers {
+			wg.Add(1)
+			go func(worker string) {
+				defer wg.Done()
+				if ws, err := loadWorkerState(p.repo.workerStateFile(worker)); err == nil {
+					if ws.PID != nil && processAlive(*ws.PID) {
+						killProcess(*ws.PID)
+					}
+				}
+				p.tearDownWorker(worker)
+			}(worker)
+		}
+		wg.Wait()
+		os.RemoveAll(p.repo.poolDir())
+		os.Remove(p.repo.poolConfigFile())
+		return nil
+	})
+}
+
+// tearDownWorker removes a worker's workspace, state, and log files.
+// Internal; caller must hold the lock and have verified the worker is
+// safe to remove.
+func (p *Pool) tearDownWorker(worker string) {
+	r := p.repo
+	wspath := r.workerDir(worker)
+	run(r.Root, "jj", "workspace", "forget", worker)
+	cacheRemoveEntry(r.cacheFile(), worker)
+	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
+		os.RemoveAll(wspath)
+	}
+	os.Remove(filepath.Join(r.poolDir(), worker+".json"))
+	os.Remove(filepath.Join(r.poolDir(), worker+".log"))
 }
 
 func ghRepo(r *RepoContext) string {
@@ -543,105 +790,16 @@ func cmdPoolResize(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	configFile := r.poolConfigFile()
-	poolDir := r.poolDir()
-
-	var cfg *PoolConfig
-	cfg, err = loadPoolConfig(configFile)
+	p, err := OpenPool(r)
 	if err != nil {
-		repo := ghRepo(r)
-		os.MkdirAll(poolDir, 0755)
-		cfg = &PoolConfig{
-			Size:      0,
-			GHRepo:    repo,
-			Workers:   []string{},
-			CreatedAt: nowUTC(),
-		}
-		savePoolConfig(configFile, cfg)
-	}
-
-	oldSize := cfg.Size
-	if newSize == oldSize {
-		info("Pool is already size %d", oldSize)
-		return
-	}
-
-	if newSize > oldSize {
-		var wg sync.WaitGroup
-		for i := 0; i < newSize-oldSize; i++ {
-			name := generateWorkerName()
-			wspath := r.workerDir(name)
-			wsName := name
-			jjArgs := []string{"workspace", "add", wspath}
-			if _, err := run(r.Root, "jj", jjArgs...); err != nil {
-				fatal("Failed to create %s: %v", name, err)
-			}
-			cfg.Workers = append(cfg.Workers, name)
-			cacheAddEntry(r.cacheFile(), wsName, wspath)
-			wg.Add(1)
-			go func(name, wspath string) {
-				defer wg.Done()
-				copyEnvFile(r.Root, wspath)
-				copySynapseClone(r.Root, wspath)
-				CreateIdleWorker(filepath.Join(poolDir, name+".json"))
-			}(name, wspath)
-			info("  Created %s", name)
-		}
-		wg.Wait()
-
-		cfg.Size = newSize
-		savePoolConfig(configFile, cfg)
-		info("Pool expanded from %d to %d", oldSize, newSize)
-		return
-	}
-
-	// Shrinking
-	nonIdle := 0
-	var idleNames []string
-	for i := len(cfg.Workers) - 1; i >= newSize; i-- {
-		name := cfg.Workers[i]
-		sf := filepath.Join(poolDir, name+".json")
-		if _, err := os.Stat(sf); os.IsNotExist(err) {
-			idleNames = append(idleNames, name)
-			continue
-		}
-		h, err := LoadLiveWorker(r, name)
+		p, err = CreatePool(r)
 		if err != nil {
-			idleNames = append(idleNames, name)
-			continue
-		}
-		if h.State().Status == "idle" || h.State().Status == "done" || h.State().Status == "failed" {
-			idleNames = append(idleNames, name)
-		} else {
-			nonIdle++
+			fatal("Create pool: %v", err)
 		}
 	}
-
-	toRemove := oldSize - newSize
-	if len(idleNames) < toRemove {
-		minSize := oldSize - len(idleNames)
-		fatal("Cannot shrink to %d: %d worker(s) are busy.\nMinimum safe size is %d. Use 'wsg pool list' to see status.", newSize, nonIdle, minSize)
+	if err := p.Resize(newSize); err != nil {
+		fatal("%v", err)
 	}
-
-	removed := make(map[string]bool)
-	for _, name := range idleNames {
-		cmdRm([]string{"--force", name})
-		os.Remove(filepath.Join(poolDir, name+".json"))
-		os.Remove(filepath.Join(poolDir, name+".log"))
-		removed[name] = true
-		info("  Removed %s", name)
-	}
-
-	remaining := make([]string, 0, newSize)
-	for _, w := range cfg.Workers {
-		if !removed[w] {
-			remaining = append(remaining, w)
-		}
-	}
-	cfg.Size = newSize
-	cfg.Workers = remaining
-	savePoolConfig(configFile, cfg)
-	info("Pool shrunk from %d to %d", oldSize, newSize)
 }
 
 func generateWorkerName() string {
@@ -656,8 +814,7 @@ func cmdPoolList() {
 		fatal("Not in a jj repo")
 	}
 
-	configFile := r.poolConfigFile()
-	cfg, err := loadPoolConfig(configFile)
+	p, err := OpenPool(r)
 	if err != nil {
 		fatal("No pool. Run: wsg pool create --size N")
 	}
@@ -667,7 +824,7 @@ func cmdPoolList() {
 	fmt.Printf("%-10s %-10s %-14s %s\n", "WORKER", "STATUS", "TICKET", "ELAPSED")
 	fmt.Printf("%-10s %-10s %-14s %s\n", "------", "------", "------", "-------")
 
-	for _, worker := range cfg.Workers {
+	for _, worker := range p.Config().Workers {
 		h, err := LoadLiveWorker(r, worker)
 		if err != nil {
 			continue
@@ -712,7 +869,7 @@ func cmdPoolList() {
 
 	fmt.Println()
 	fmt.Printf("Pool: %d idle, %d busy, %d done, %d failed (%d total)\n",
-		idle, busy, doneCount, failed, cfg.Size)
+		idle, busy, doneCount, failed, p.Config().Size)
 }
 
 func cmdPoolDestroy() {
@@ -721,31 +878,14 @@ func cmdPoolDestroy() {
 		fatal("Not in a jj repo")
 	}
 
-	configFile := r.poolConfigFile()
-	cfg, err := loadPoolConfig(configFile)
+	p, err := OpenPool(r)
 	if err != nil {
 		info("No pool to destroy")
 		return
 	}
-
-	var wg sync.WaitGroup
-	for _, worker := range cfg.Workers {
-		wg.Add(1)
-		go func(worker string) {
-			defer wg.Done()
-			sf := r.workerStateFile(worker)
-			if ws, err := loadWorkerState(sf); err == nil {
-				if ws.PID != nil && processAlive(*ws.PID) {
-					killProcess(*ws.PID)
-				}
-			}
-			cmdRm([]string{"--force", worker})
-		}(worker)
+	if err := p.Destroy(); err != nil {
+		fatal("%v", err)
 	}
-	wg.Wait()
-
-	os.RemoveAll(r.poolDir())
-	os.Remove(configFile)
 	info("Pool destroyed")
 }
 
@@ -760,52 +900,15 @@ func cmdPoolRm(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	if h, err := LoadLiveWorker(r, worker); err == nil {
-		if h.State().Status == "busy" {
-			fatal("Worker %s is busy. Reset it first: wsg pool reset %s", worker, worker)
-		}
+	p, err := OpenPool(r)
+	if err != nil {
+		fatal("No pool. Run: wsg pool create --size N")
 	}
-
-	size, err := removePoolWorker(r, worker)
+	size, err := p.Remove(worker)
 	if err != nil {
 		fatal("%v", err)
 	}
 	info("Removed %s (pool size: %d)", worker, size)
-}
-
-// removePoolWorker tears down an idle/done/failed worker: removes its jj
-// workspace, deletes its state/log files, and drops it from the pool config.
-// Caller is responsible for ensuring the worker is not busy.
-func removePoolWorker(r *RepoContext, worker string) (int, error) {
-	configFile := r.poolConfigFile()
-	cfg, err := loadPoolConfig(configFile)
-	if err != nil {
-		return 0, fmt.Errorf("no pool: %w", err)
-	}
-
-	wspath := r.workerDir(worker)
-	run(r.Root, "jj", "workspace", "forget", worker)
-	cacheRemoveEntry(r.cacheFile(), worker)
-	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-		os.RemoveAll(wspath)
-	}
-
-	poolDir := r.poolDir()
-	os.Remove(filepath.Join(poolDir, worker+".json"))
-	os.Remove(filepath.Join(poolDir, worker+".log"))
-
-	remaining := make([]string, 0, len(cfg.Workers))
-	for _, w := range cfg.Workers {
-		if w != worker {
-			remaining = append(remaining, w)
-		}
-	}
-	cfg.Workers = remaining
-	cfg.Size = len(remaining)
-	if err := savePoolConfig(configFile, cfg); err != nil {
-		return 0, err
-	}
-	return cfg.Size, nil
 }
 
 func cmdPoolReset(args []string) {

@@ -81,7 +81,7 @@ func newTUIModel(r *RepoContext) tuiModel {
 		repo:   r,
 		status: defaultStatus,
 	}
-	if _, err := loadPoolConfig(r.poolConfigFile()); err != nil {
+	if _, err := OpenPool(r); err != nil {
 		m.quitting = true
 		m.status = "No pool configured. Run 'wsg pool <N>' to create one."
 		return m
@@ -91,12 +91,12 @@ func newTUIModel(r *RepoContext) tuiModel {
 }
 
 func (m *tuiModel) loadWorkers() {
-	cfg, err := loadPoolConfig(m.repo.poolConfigFile())
+	p, err := OpenPool(m.repo)
 	if err != nil {
 		return
 	}
-	workers := make([]tuiWorker, 0, len(cfg.Workers))
-	for _, name := range cfg.Workers {
+	workers := make([]tuiWorker, 0, len(p.Config().Workers))
+	for _, name := range p.Config().Workers {
 		h, err := LoadLiveWorker(m.repo, name)
 		if err != nil {
 			h, _ = CreateIdleWorker(m.repo.workerStateFile(name))
@@ -375,7 +375,12 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if w.state.Status == "idle" {
 			name := w.name
-			size, err := removePoolWorker(m.repo, name)
+			p, err := OpenPool(m.repo)
+			if err != nil {
+				m.status = fmt.Sprintf("Dismiss failed: %v", err)
+				return m, nil
+			}
+			size, err := p.Remove(name)
 			if err != nil {
 				m.status = fmt.Sprintf("Dismiss failed: %v", err)
 				return m, nil
@@ -669,11 +674,15 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 	}
 }
 
-// ensurePoolCapacityForBatch grows the pool up front so concurrent orchestrators
-// don't race on cmdPoolResize. Counts only tickets that will actually dispatch
-// (skips groups already in a terminal state).
+// ensurePoolCapacityForBatch grows the pool up front so concurrent
+// orchestrators each find at least one idle worker without contending on a
+// resize. With Pool.Resize now serialised against Claim/Remove via the pool
+// lock, the pre-grow is no longer a race fix - just an early signal so the
+// "no idle workers" branch isn't the first thing each orchestrator hits.
+// Counts only tickets that will actually dispatch (skips groups already in
+// a terminal state).
 func ensurePoolCapacityForBatch(r *RepoContext, tickets []string) {
-	cfg, err := loadPoolConfig(r.poolConfigFile())
+	p, err := OpenPool(r)
 	if err != nil {
 		return
 	}
@@ -687,12 +696,12 @@ func ensurePoolCapacityForBatch(r *RepoContext, tickets []string) {
 	if need == 0 {
 		return
 	}
-	idle := countIdleWorkers(r)
-	if idle >= need {
+	snap := p.Snapshot()
+	if snap.Idle >= need {
 		return
 	}
-	newSize := cfg.Size + (need - idle)
-	cmdPoolResize([]string{fmt.Sprintf("%d", newSize)})
+	newSize := snap.Size + (need - snap.Idle)
+	p.Resize(newSize)
 }
 
 func (m tuiModel) doFetchAll() tea.Cmd {

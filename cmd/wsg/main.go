@@ -70,7 +70,7 @@ func cmdDefault() {
 	if err != nil {
 		fatal("Not in a jj repo")
 	}
-	if _, err := loadPoolConfig(r.poolConfigFile()); err == nil {
+	if _, err := OpenPool(r); err == nil {
 		if isTTY {
 			runTUI(r)
 		} else {

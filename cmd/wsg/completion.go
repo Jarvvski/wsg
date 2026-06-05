@@ -23,11 +23,11 @@ func cmdListWorkers() {
 	if err != nil {
 		return
 	}
-	cfg, err := loadPoolConfig(r.poolConfigFile())
+	p, err := OpenPool(r)
 	if err != nil {
 		return
 	}
-	for _, w := range cfg.Workers {
+	for _, w := range p.Config().Workers {
 		fmt.Println(displayWorker(w))
 	}
 }
@@ -51,11 +51,11 @@ func cmdListPoolWorkerStates(state string) {
 	if err != nil {
 		return
 	}
-	cfg, err := loadPoolConfig(r.poolConfigFile())
+	p, err := OpenPool(r)
 	if err != nil {
 		return
 	}
-	for _, w := range cfg.Workers {
+	for _, w := range p.Config().Workers {
 		ws, err := loadWorkerState(r.workerStateFile(w))
 		if err != nil {
 			continue
@@ -90,11 +90,11 @@ func cmdInternalComplete(args []string) {
 		if err != nil {
 			return
 		}
-		cfg, err := loadPoolConfig(r.poolConfigFile())
+		p, err := OpenPool(r)
 		if err != nil {
 			return
 		}
-		for _, w := range cfg.Workers {
+		for _, w := range p.Config().Workers {
 			ws, err := loadWorkerState(r.workerStateFile(w))
 			if err != nil {
 				continue
