@@ -53,7 +53,7 @@ After modifying, always run `make install` and verify:
 
 ## Landing a change
 
-One commit per focused fix/change. Once tests pass and `make install` runs clean, land it with:
+One commit per focused fix/change. **Land automatically when tests pass and `make install` runs clean - don't ask first.** Run:
 
 ```bash
 jj describe -m "<imperative one-liner>"   # name the just-finished change
