@@ -463,11 +463,6 @@ func BuildDispatchGroup(r *RepoContext, parent string, opts *DispatchOpts) (*Dis
 		return nil, err
 	}
 
-	if _, ok := entries[parent]; ok {
-		info("  Dropping %s from sub-issues (parent cannot be its own child)", parent)
-		delete(entries, parent)
-	}
-
 	if len(entries) == 0 {
 		return nil, nil
 	}

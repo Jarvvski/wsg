@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.2.1 - 2026-06-05
+
+### Fixed
+
+- **Transient Linear MCP failures no longer kill a batch.** `wsg dispatch <parent>` builds its sub-issue graph through one Linear MCP round-trip; a network blip or an unparseable JSON response used to abort the whole dispatch. The call now retries once with a short backoff, and the parsed response is validated to drop malformed rows (parent reappearing as its own child, empty title or status, self-references in `blocked_by`) with a one-line log per drop, so a partly-broken response still moves the rest of the work forward.
+
 ## 0.2.0 - 2026-06-05
 
 ### Changed

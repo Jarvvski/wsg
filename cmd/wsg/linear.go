@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // linear.go is the single seam onto Linear-via-claude queries. Every Linear
@@ -49,10 +51,19 @@ type linearSubIssueEntry struct {
 	CrossRepo bool     `json:"cross_repo"`
 }
 
+// linearSubIssueGraphRetryDelay is the backoff between the first attempt
+// and the single retry. Overridable from tests to keep them fast.
+var linearSubIssueGraphRetryDelay = 500 * time.Millisecond
+
 // linearSubIssueGraph fetches the parent-child sub-issue graph for parent.
 // The returned map is keyed by direct-child ticket ID; an empty map means
 // parent has no sub-issues. repo is the gh repo slug, embedded in the
 // prompt so cross_repo detection has a reference point.
+//
+// The MCP round-trip retries once on transient failure (network blip, the
+// model returning unparseable JSON), and the parsed map is validated to
+// drop malformed rows so a partly-broken response still moves work forward
+// instead of killing the whole batch.
 func linearSubIssueGraph(r *RepoContext, parent, repo string) (map[string]linearSubIssueEntry, error) {
 	prompt := fmt.Sprintf(`Fetch the parent-child sub-issue graph for Linear issue %s.
 
@@ -88,7 +99,30 @@ CRITICAL constraints (read carefully):
 - cross_repo is true if the sub-issue targets a different codebase than %s (look for repo/service names in the title or description).
 - Include ALL children from step 1 even if they have no blockers.`, parent, parent, parent, parent, parent, parent, parent, parent, parent, repo)
 
-	output, err := claudeQuery(r.Root, prompt, linearAllowedTools)
+	query := func(p string) (string, error) {
+		return claudeQuery(r.Root, p, linearAllowedTools)
+	}
+	return fetchSubIssueGraph(parent, prompt, query)
+}
+
+// fetchSubIssueGraph runs the query once, retries on transient failure,
+// then validates the parsed map. The query callable is the testable seam:
+// production passes claudeQuery; tests pass a deterministic stub.
+func fetchSubIssueGraph(parent, prompt string, query func(string) (string, error)) (map[string]linearSubIssueEntry, error) {
+	entries, err := parseSubIssueGraphOnce(query, prompt)
+	if err != nil {
+		info("  Sub-issue graph fetch failed (%v); retrying once...", err)
+		time.Sleep(linearSubIssueGraphRetryDelay)
+		entries, err = parseSubIssueGraphOnce(query, prompt)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return validateSubIssueEntries(entries, parent), nil
+}
+
+func parseSubIssueGraphOnce(query func(string) (string, error), prompt string) (map[string]linearSubIssueEntry, error) {
+	output, err := query(prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -99,4 +133,41 @@ CRITICAL constraints (read carefully):
 		return nil, fmt.Errorf("failed to parse dependency graph: %v\nraw: %s", err, output)
 	}
 	return resp.SubIssues, nil
+}
+
+// validateSubIssueEntries drops malformed rows (parent reappearing as a
+// child, empty title or status, self-references in blocked_by) and logs
+// each drop. Non-sibling blocker filtering still happens in
+// BuildDispatchGroup once the final sibling set is known.
+func validateSubIssueEntries(entries map[string]linearSubIssueEntry, parent string) map[string]linearSubIssueEntry {
+	if entries == nil {
+		return nil
+	}
+	if _, ok := entries[parent]; ok {
+		info("  Dropping %s from sub-issues (parent cannot be its own child)", parent)
+		delete(entries, parent)
+	}
+	for id, e := range entries {
+		if strings.TrimSpace(e.Title) == "" {
+			info("  Dropping %s: empty title", id)
+			delete(entries, id)
+			continue
+		}
+		if strings.TrimSpace(e.Status) == "" {
+			info("  Dropping %s: empty status", id)
+			delete(entries, id)
+			continue
+		}
+		deps := make([]string, 0, len(e.BlockedBy))
+		for _, dep := range e.BlockedBy {
+			if dep == id {
+				info("  %s: dropping self-blocker", id)
+				continue
+			}
+			deps = append(deps, dep)
+		}
+		e.BlockedBy = deps
+		entries[id] = e
+	}
+	return entries
 }
