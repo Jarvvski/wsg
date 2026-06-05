@@ -232,7 +232,7 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	}
 
 	systemPrompt := buildDispatchSystemPrompt(repo, branchPrefix, ticketLower, depCtx)
-	prCreateCmd := buildPRCreateCmd(repo, opts.TicketID, depCtx)
+	prCreateCmd := ghPRCreateCmd(repo, opts.TicketID, depCtx)
 	workerPrompt := buildDispatchWorkerPrompt(opts.TicketID, userEmail, branchPrefix, ticketLower, prCreateCmd)
 
 	inv := claudeInvocation{

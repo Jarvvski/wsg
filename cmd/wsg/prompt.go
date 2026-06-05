@@ -41,17 +41,6 @@ If you see merge conflict markers, resolve them before proceeding.`, depCtx.Cont
 	return prompt
 }
 
-func buildPRCreateCmd(repo, ticketID string, depCtx *DependencyContext) string {
-	if depCtx != nil && depCtx.PRBase != "" {
-		return fmt.Sprintf(
-			`gh -R %s pr create --head <branch> --base %s --title "%s: <title from ticket>" --body "<summary of changes and link to Linear ticket>"`,
-			repo, depCtx.PRBase, ticketID)
-	}
-	return fmt.Sprintf(
-		`gh -R %s pr create --head <branch> --title "%s: <title from ticket>" --body "<summary of changes and link to Linear ticket>"`,
-		repo, ticketID)
-}
-
 func buildDispatchWorkerPrompt(ticketID, userEmail, branchPrefix, ticketLower, prCreateCmd string) string {
 	return fmt.Sprintf(`Implement Linear ticket %s.
 

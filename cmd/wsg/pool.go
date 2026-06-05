@@ -725,14 +725,6 @@ func (p *Pool) tearDownWorker(worker string) {
 	Teardown(p.repo, worker)
 }
 
-func ghRepo(r *RepoContext) string {
-	configFile := r.poolConfigFile()
-	if cfg, err := loadPoolConfig(configFile); err == nil && cfg.GHRepo != "" {
-		return strings.TrimSuffix(cfg.GHRepo, ".git")
-	}
-	return jjRemoteOrigin(r.Root)
-}
-
 func nowUTC() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05Z")
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -155,27 +154,16 @@ func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
 		return "", fmt.Errorf("cannot detect GitHub repo")
 	}
 
-	prJSON, err := run("", "gh", "-R", repo, "pr", "list", "--head", *ws.BranchName, "--json", "number,url,headRefName,mergeable", "--limit", "1")
+	pr, err := ghPRForBranch(repo, *ws.BranchName)
 	if err != nil {
-		return "", fmt.Errorf("failed to find PR: %v", err)
+		return "", err
 	}
-	if prJSON == "" || prJSON == "[]" {
+	if pr == nil {
 		return "", fmt.Errorf("no PR found for branch %s", *ws.BranchName)
 	}
-
-	var prs []struct {
-		Number      int    `json:"number"`
-		URL         string `json:"url"`
-		HeadRefName string `json:"headRefName"`
-		Mergeable   string `json:"mergeable"`
-	}
-	if err := json.Unmarshal([]byte(prJSON), &prs); err != nil || len(prs) == 0 {
-		return "", fmt.Errorf("no PR found for branch %s", *ws.BranchName)
-	}
-	pr := prs[0]
 
 	hasConflicts := strings.EqualFold(pr.Mergeable, "CONFLICTING")
-	failingChecks := fetchFailingChecks(repo, pr.Number)
+	failingChecks := ghFailingChecks(repo, pr.Number)
 	if hasConflicts {
 		info("PR has merge conflicts")
 	}
@@ -183,31 +171,6 @@ func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
 		info("Found %d failing CI check(s)", len(failingChecks))
 	}
 	return buildReviewPrompt(repo, pr.Number, pr.URL, pr.HeadRefName, failingChecks, hasConflicts), nil
-}
-
-type ghCheck struct {
-	Name       string `json:"name"`
-	Conclusion string `json:"conclusion"`
-}
-
-func fetchFailingChecks(repo string, prNumber int) []ghCheck {
-	checksJSON, err := run("", "gh", "-R", repo, "pr", "checks",
-		fmt.Sprintf("%d", prNumber), "--json", "name,conclusion")
-	if err != nil || checksJSON == "" {
-		return nil
-	}
-	var checks []ghCheck
-	if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
-		return nil
-	}
-	var failing []ghCheck
-	for _, c := range checks {
-		switch strings.ToUpper(c.Conclusion) {
-		case "FAILURE", "STARTUP_FAILURE", "TIMED_OUT":
-			failing = append(failing, c)
-		}
-	}
-	return failing
 }
 
 func cmdMount(args []string) {

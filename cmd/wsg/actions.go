@@ -70,7 +70,7 @@ func (a *WorkerActions) OpenPR(worker string) error {
 	if repo == "" {
 		return fmt.Errorf("cannot detect GitHub repo")
 	}
-	if _, err := run("", "gh", "-R", repo, "pr", "view", *ws.BranchName, "--web"); err != nil {
+	if err := ghOpenInBrowser(repo, *ws.BranchName); err != nil {
 		return fmt.Errorf("no PR for branch %s", *ws.BranchName)
 	}
 	return nil
