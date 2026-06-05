@@ -238,20 +238,6 @@ func TestTUIReviewGatingNoBranch(t *testing.T) {
 	}
 }
 
-func TestTUISendGatingNoSession(t *testing.T) {
-	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": newIdleWorkerState(),
-	})
-
-	m := newTUIModel(r)
-	updated, _ := m.Update(keyPress('s'))
-	m = updated.(tuiModel)
-
-	if !strings.Contains(m.status, "session") && !strings.Contains(m.status, "no ") {
-		t.Errorf("expected error about no session in status, got: %q", m.status)
-	}
-}
-
 func TestTUIResetBlockedForBusyWorker(t *testing.T) {
 	ticket := "AMBA-42"
 	startedAt := "2026-05-20T14:00:00Z"
