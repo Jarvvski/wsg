@@ -528,7 +528,10 @@ func (p *Pool) Config() *PoolConfig {
 
 // Snapshot reads every worker state file, reconciling dead-busy entries
 // via LoadLiveWorker, and returns the live counts. Does not take the
-// lock - the result reflects the moment of read.
+// lock and is a best-effort view: another process can flip a worker's
+// state the instant after the read returns. It exists for TUI rendering
+// and CLI status output - never use it to make a claim decision. The
+// reserve verbs (Reserve, GrowAndReserve, Claim) are the locked path.
 func (p *Pool) Snapshot() *PoolSnapshot {
 	snap := &PoolSnapshot{
 		Size:    p.cfg.Size,
@@ -579,36 +582,133 @@ func (p *Pool) withLock(fn func() error) error {
 	return fn()
 }
 
-// Claim atomically picks the first idle worker and marks it busy with
-// ticket. Serialises against concurrent Claim, Resize, Remove.
-func (p *Pool) Claim(ticket string) (string, error) {
-	var picked string
+// PoolFull is the typed error returned by Reserve when the pool does
+// not have enough idle workers to satisfy the request. Callers inspect
+// Gap() to decide whether to prompt for a resize and follow up with
+// GrowAndReserve, or fall back to per-ticket Claim for a partial run.
+// No state has been written when PoolFull is returned.
+type PoolFull struct {
+	Need int
+	Have int
+}
+
+func (e *PoolFull) Error() string {
+	return fmt.Sprintf("pool full: %d idle, need %d", e.Have, e.Need)
+}
+
+func (e *PoolFull) Gap() int {
+	return e.Need - e.Have
+}
+
+// Reserve atomically marks len(tickets) idle workers busy, one per
+// ticket, in the order tickets are given. The returned slice aligns
+// with the input by index. On shortage returns *PoolFull (without
+// touching state) so the caller can decide between resize, partial
+// dispatch, or abort. Serialises against concurrent Claim, Resize,
+// Remove via the pool lock.
+func (p *Pool) Reserve(tickets []string) ([]string, error) {
+	var out []string
 	err := p.withLock(func() error {
-		ticketLower := strings.ToLower(ticket)
-		poolDir := p.repo.poolDir()
-		for _, worker := range p.cfg.Workers {
-			sf := p.repo.workerStateFile(worker)
-			ws, err := loadWorkerState(sf)
-			if err != nil {
-				continue
-			}
-			if ws.Status != WorkerStatusIdle {
-				continue
-			}
-			logFile := filepath.Join(poolDir, worker+".log")
-			ws.MarkDispatched(ticket, logFile, ticketLower)
-			if err := saveWorkerState(sf, ws); err != nil {
-				return fmt.Errorf("save worker state: %w", err)
-			}
-			picked = worker
-			return nil
+		picked, err := p.reserveLocked(tickets)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("no idle workers")
+		out = picked
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GrowAndReserve grows the pool by the idle gap and reserves the
+// requested workers in a single locked critical section. Used by the
+// CLI when the user has agreed to a resize prompt - the grow and the
+// reserve happen atomically so a concurrent process can't claim the
+// freshly-grown slots out from under us.
+func (p *Pool) GrowAndReserve(tickets []string) ([]string, error) {
+	var out []string
+	err := p.withLock(func() error {
+		idle := 0
+		for _, worker := range p.cfg.Workers {
+			ws, lerr := loadWorkerState(p.repo.workerStateFile(worker))
+			if lerr == nil && ws.Status == WorkerStatusIdle {
+				idle++
+			}
+		}
+		need := len(tickets)
+		if idle < need {
+			newSize := p.cfg.Size + (need - idle)
+			if gerr := p.grow(newSize); gerr != nil {
+				return gerr
+			}
+		}
+		picked, rerr := p.reserveLocked(tickets)
+		if rerr != nil {
+			return rerr
+		}
+		out = picked
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Claim atomically picks the first idle worker and marks it busy with
+// ticket. Convenience wrapper over Reserve for the single-ticket call
+// sites; the orchestrator's per-tick claim loop uses this, as do
+// recovery paths that grow-then-claim one slot at a time.
+func (p *Pool) Claim(ticket string) (string, error) {
+	workers, err := p.Reserve([]string{ticket})
 	if err != nil {
 		return "", err
 	}
-	return picked, nil
+	return workers[0], nil
+}
+
+// reserveLocked finds N idle workers and marks each busy with the
+// corresponding ticket, in input order. Caller must hold the pool
+// lock. On *PoolFull no state has been written.
+func (p *Pool) reserveLocked(tickets []string) ([]string, error) {
+	need := len(tickets)
+	type slot struct {
+		name string
+		sf   string
+		ws   *WorkerState
+	}
+	picks := make([]slot, 0, need)
+	for _, worker := range p.cfg.Workers {
+		if len(picks) == need {
+			break
+		}
+		sf := p.repo.workerStateFile(worker)
+		ws, err := loadWorkerState(sf)
+		if err != nil {
+			continue
+		}
+		if ws.Status != WorkerStatusIdle {
+			continue
+		}
+		picks = append(picks, slot{name: worker, sf: sf, ws: ws})
+	}
+	if len(picks) < need {
+		return nil, &PoolFull{Need: need, Have: len(picks)}
+	}
+	poolDir := p.repo.poolDir()
+	out := make([]string, need)
+	for i, s := range picks {
+		ticket := tickets[i]
+		logFile := filepath.Join(poolDir, s.name+".log")
+		s.ws.MarkDispatched(ticket, logFile, strings.ToLower(ticket))
+		if err := saveWorkerState(s.sf, s.ws); err != nil {
+			return nil, fmt.Errorf("save worker state: %w", err)
+		}
+		out[i] = s.name
+	}
+	return out, nil
 }
 
 // Resize grows or shrinks the pool under the lock. Grow adds workers in

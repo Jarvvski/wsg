@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -692,19 +693,16 @@ func cmdOrchestrate(args []string) {
 			if perr != nil {
 				fatal("No pool. Run: wsg pool create --size N")
 			}
-			worker, werr := p.Claim(parent)
-			if werr != nil {
-				newSize := p.Config().Size + 1
-				info("Auto-expanding pool to %d for %s", newSize, parent)
-				if rerr := p.Resize(newSize); rerr != nil {
-					fatal("Resize: %v", rerr)
-				}
-				worker, werr = p.Claim(parent)
-				if werr != nil {
-					fatal("No idle workers for %s", parent)
-				}
+			workers, werr := p.Reserve([]string{parent})
+			var pf *PoolFull
+			if errors.As(werr, &pf) {
+				info("Auto-expanding pool to %d for %s", p.Config().Size+pf.Gap(), parent)
+				workers, werr = p.GrowAndReserve([]string{parent})
 			}
-			launchWorker(r, worker, &opts, nil)
+			if werr != nil {
+				fatal("No idle workers for %s: %v", parent, werr)
+			}
+			launchWorker(r, workers[0], &opts, nil)
 			return
 		}
 	}

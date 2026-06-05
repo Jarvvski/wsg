@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.1.1 - 2026-06-05
+
+### Fixed
+
+- **Dispatch resize prompts no longer lie about the slot count.** `wsg dispatch <A> <B> ...` used to read the pool size via a lockless snapshot, then prompt the user to resize, then claim - and a concurrent process could grab the slots in between. The resize-and-claim now run atomically under the pool lock, so the workers you confirm are the workers you get (or you see a fresh "Resize?" prompt with the real gap).
+
 ## 0.1.0 - 2026-06-05
 
 First tagged version. Backfills the user-visible deltas from the architecture-deepening pass landed today (5 candidates: Reclaim, LoadLiveWorker, Launch unification, DispatchGroup methodisation, Pool aggregate) plus the `wsg version` command itself.

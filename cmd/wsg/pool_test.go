@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -713,6 +714,97 @@ func TestPoolClaimNoIdleErrors(t *testing.T) {
 	p, _ := OpenPool(r)
 	if _, err := p.Claim("AMBA-2"); err == nil {
 		t.Fatal("expected no-idle error")
+	}
+}
+
+func TestPoolReserveAlignsWorkersToTickets(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": newIdleWorkerState(),
+		"worker-3": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+
+	tickets := []string{"AMBA-1", "AMBA-2"}
+	workers, err := p.Reserve(tickets)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if len(workers) != len(tickets) {
+		t.Fatalf("len(workers) = %d, want %d", len(workers), len(tickets))
+	}
+	for i, w := range workers {
+		ws, lerr := loadWorkerState(r.workerStateFile(w))
+		if lerr != nil {
+			t.Fatalf("load %s: %v", w, lerr)
+		}
+		if ws.Status != WorkerStatusBusy {
+			t.Errorf("workers[%d]=%q status = %q, want busy", i, w, ws.Status)
+		}
+		if ws.Ticket == nil || *ws.Ticket != tickets[i] {
+			t.Errorf("workers[%d]=%q ticket = %v, want %q", i, w, ws.Ticket, tickets[i])
+		}
+	}
+
+	// The third worker remains idle - Reserve is all-or-nothing for the
+	// asked-for count, not greedy.
+	ws3, _ := loadWorkerState(r.workerStateFile("worker-3"))
+	if ws3.Status != WorkerStatusIdle {
+		t.Errorf("worker-3 status = %q, want idle", ws3.Status)
+	}
+}
+
+func TestPoolReserveReturnsPoolFullWithoutWriting(t *testing.T) {
+	busy := "AMBA-busy"
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": {Status: WorkerStatusBusy, Ticket: &busy},
+	})
+	p, _ := OpenPool(r)
+
+	tickets := []string{"AMBA-X", "AMBA-Y", "AMBA-Z"}
+	workers, err := p.Reserve(tickets)
+	if err == nil {
+		t.Fatalf("Reserve unexpectedly succeeded: workers=%v", workers)
+	}
+	var pf *PoolFull
+	if !errors.As(err, &pf) {
+		t.Fatalf("Reserve err = %v (%T), want *PoolFull", err, err)
+	}
+	if pf.Need != 3 || pf.Have != 1 || pf.Gap() != 2 {
+		t.Errorf("PoolFull = %+v, want Need=3 Have=1 Gap=2", pf)
+	}
+
+	// Crucially, the idle worker we could have claimed was NOT written.
+	ws1, _ := loadWorkerState(r.workerStateFile("worker-1"))
+	if ws1.Status != WorkerStatusIdle {
+		t.Errorf("worker-1 status = %q, want idle (Reserve must not mutate on PoolFull)", ws1.Status)
+	}
+}
+
+func TestPoolGrowAndReserveSkipsGrowWhenEnoughIdle(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+	initialSize := p.Config().Size
+
+	workers, err := p.GrowAndReserve([]string{"AMBA-A", "AMBA-B"})
+	if err != nil {
+		t.Fatalf("GrowAndReserve: %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("len(workers) = %d, want 2", len(workers))
+	}
+
+	// No grow was needed - size must be unchanged.
+	cfg, _ := loadPoolConfig(r.poolConfigFile())
+	if cfg.Size != initialSize {
+		t.Errorf("Size = %d after GrowAndReserve, want %d (no grow expected)", cfg.Size, initialSize)
+	}
+	if len(cfg.Workers) != initialSize {
+		t.Errorf("len(Workers) = %d, want %d", len(cfg.Workers), initialSize)
 	}
 }
 

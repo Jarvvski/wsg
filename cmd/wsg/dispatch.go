@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -105,32 +106,49 @@ func cmdDispatch(args []string) {
 		return
 	}
 
-	snap := p.Snapshot()
-	need := len(tickets)
-	if snap.Idle < need {
-		newSize := snap.Size + (need - snap.Idle)
-		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", snap.Idle, need, newSize) {
-			if err := p.Resize(newSize); err != nil {
-				fatal("Resize: %v", err)
-			}
+	workers, err := p.Reserve(tickets)
+	var pf *PoolFull
+	if errors.As(err, &pf) {
+		newSize := p.Config().Size + pf.Gap()
+		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", pf.Have, pf.Need, newSize) {
+			workers, err = p.GrowAndReserve(tickets)
+		} else {
+			claimPartial(r, p, tickets, &opts, true)
+			return
 		}
 	}
+	if err != nil {
+		fatal("Reserve: %v", err)
+	}
+	for i, worker := range workers {
+		opts.TicketID = tickets[i]
+		launchWorker(r, worker, &opts, nil)
+	}
+}
 
+// claimPartial walks tickets and claims one worker per ticket through
+// the locked Pool, stopping at the first shortage. Used when the user
+// declines an upfront resize: we still try to dispatch as many tickets
+// as currently fit. fatalOnZero is true for the interactive dispatch
+// path (no idle = fatal) and false for the batch path where partial
+// progress is the norm.
+func claimPartial(r *RepoContext, p *Pool, tickets []string, opts *DispatchOpts, fatalOnZero bool) int {
 	dispatched := 0
 	for _, tid := range tickets {
 		worker, err := p.Claim(tid)
 		if err != nil {
-			if dispatched > 0 {
-				info("No more idle workers. Dispatched %d/%d ticket(s).", dispatched, need)
-			} else {
+			if dispatched == 0 && fatalOnZero {
 				fatal("No idle workers. Run: wsg pool list")
 			}
-			return
+			info("No more idle workers. Dispatched %d/%d ticket(s).", dispatched, len(tickets))
+			return dispatched
 		}
-		opts.TicketID = tid
-		launchWorker(r, worker, &opts, nil)
+		ticketOpts := *opts
+		ticketOpts.TicketID = tid
+		launchWorker(r, worker, &ticketOpts, nil)
 		dispatched++
 	}
+	return dispatched
 }
 
 func dispatchAll(opts *DispatchOpts) {
@@ -156,30 +174,27 @@ func dispatchAll(opts *DispatchOpts) {
 		return
 	}
 
-	snap := p.Snapshot()
-	need := len(tickets)
-	if snap.Idle < need {
-		newSize := snap.Size + (need - snap.Idle)
-		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", snap.Idle, need, newSize) {
-			if err := p.Resize(newSize); err != nil {
-				fatal("Resize: %v", err)
-			}
-		}
-	}
-
-	count := 0
-	for _, tid := range tickets {
-		worker, err := p.Claim(tid)
-		if err != nil {
-			info("No more idle workers. Dispatched %d/%d ticket(s).", count, need)
+	workers, err := p.Reserve(tickets)
+	var pf *PoolFull
+	if errors.As(err, &pf) {
+		newSize := p.Config().Size + pf.Gap()
+		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", pf.Have, pf.Need, newSize) {
+			workers, err = p.GrowAndReserve(tickets)
+		} else {
+			count := claimPartial(r, p, tickets, opts, false)
+			info("Dispatched %d ticket(s)", count)
 			return
 		}
-		ticketOpts := *opts
-		ticketOpts.TicketID = tid
-		launchWorker(r, worker, &ticketOpts, nil)
-		count++
 	}
-	info("Dispatched %d ticket(s)", count)
+	if err != nil {
+		fatal("Reserve: %v", err)
+	}
+	for i, worker := range workers {
+		ticketOpts := *opts
+		ticketOpts.TicketID = tickets[i]
+		launchWorker(r, worker, &ticketOpts, nil)
+	}
+	info("Dispatched %d ticket(s)", len(workers))
 }
 
 func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *DependencyContext) {
