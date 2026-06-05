@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestMarkDispatched(t *testing.T) {
@@ -592,6 +595,106 @@ func TestHandleSetPID(t *testing.T) {
 	loaded, _ := loadWorkerState(path)
 	if loaded.PID == nil || *loaded.PID != 12345 {
 		t.Errorf("persisted pid = %v, want 12345", loaded.PID)
+	}
+}
+
+func TestReclaimKillsLivePIDAndResets(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	if err := os.MkdirAll(poolDir, 0755); err != nil {
+		t.Fatalf("mkdir pool: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	pid := cmd.Process.Pid
+	go cmd.Wait()
+	defer func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}()
+
+	path := r.workerStateFile("worker-1")
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+	ws.SetPID(pid)
+	if err := saveWorkerState(path, ws); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	h, err := OpenWorker(path)
+	if err != nil {
+		t.Fatalf("OpenWorker: %v", err)
+	}
+
+	if !processAlive(pid) {
+		t.Fatal("sleep should be alive before Reclaim")
+	}
+
+	if err := h.Reclaim(r, "worker-1"); err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		t.Errorf("process %d still alive after Reclaim", pid)
+	}
+
+	if h.State().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.State().Status)
+	}
+	if h.State().PID != nil {
+		t.Errorf("PID = %v, want nil after reset", h.State().PID)
+	}
+	if h.State().Ticket != nil {
+		t.Errorf("ticket = %v, want nil after reset", h.State().Ticket)
+	}
+
+	loaded, err := loadWorkerState(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Status != "idle" {
+		t.Errorf("persisted status = %q, want idle", loaded.Status)
+	}
+}
+
+func TestReclaimNoPIDResetsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	if err := os.MkdirAll(poolDir, 0755); err != nil {
+		t.Fatalf("mkdir pool: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	path := r.workerStateFile("worker-1")
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+	ws.MarkFailed(1, "crashed")
+	if err := saveWorkerState(path, ws); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	h, err := OpenWorker(path)
+	if err != nil {
+		t.Fatalf("OpenWorker: %v", err)
+	}
+
+	if err := h.Reclaim(r, "worker-1"); err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+
+	if h.State().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.State().Status)
+	}
+	if h.State().Error != nil {
+		t.Errorf("error = %v, want nil after reset", h.State().Error)
 	}
 }
 

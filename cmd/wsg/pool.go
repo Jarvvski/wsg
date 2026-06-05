@@ -151,6 +151,25 @@ func (h *WorkerHandle) Reset() error {
 	return h.save()
 }
 
+// Reclaim returns the worker to idle: kills any live PID, resets state, and
+// fires an async jj restore + jj new main in the workspace dir if it exists.
+// The workspace restore is fire-and-forget; callers should not assume it has
+// completed when Reclaim returns.
+func (h *WorkerHandle) Reclaim(r *RepoContext, worker string) error {
+	if h.state.PID != nil && processAlive(*h.state.PID) {
+		killProcess(*h.state.PID)
+	}
+	if err := h.Reset(); err != nil {
+		return err
+	}
+	wspath := r.workerDir(worker)
+	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
+		startBackground(wspath, os.DevNull, "sh", "-c",
+			"jj restore 2>/dev/null; jj new main 2>/dev/null")
+	}
+	return nil
+}
+
 func (h *WorkerHandle) save() error {
 	return saveWorkerState(h.path, h.state)
 }
@@ -779,16 +798,8 @@ func cmdPoolReset(args []string) {
 		fatal("Worker %s not found", worker)
 	}
 
-	if h.State().PID != nil && processAlive(*h.State().PID) {
-		killProcess(*h.State().PID)
+	if err := h.Reclaim(r, worker); err != nil {
+		fatal("Reset %s: %v", worker, err)
 	}
-
-	h.Reset()
 	info("Reset %s to idle", worker)
-
-	wspath := r.workerDir(worker)
-	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-		startBackground(wspath, os.DevNull, "sh", "-c",
-			"jj restore 2>/dev/null; jj new main 2>/dev/null")
-	}
 }

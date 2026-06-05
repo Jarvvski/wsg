@@ -599,16 +599,8 @@ func (m tuiModel) doKill(w *tuiWorker) tea.Cmd {
 		if err != nil {
 			return killResultMsg{worker: name, err: err}
 		}
-		if h.State().PID != nil && processAlive(*h.State().PID) {
-			killProcess(*h.State().PID)
-		}
-		if err := h.Reset(); err != nil {
+		if err := h.Reclaim(r, name); err != nil {
 			return killResultMsg{worker: name, err: err}
-		}
-		wspath := r.workerDir(name)
-		if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-			startBackground(wspath, os.DevNull, "sh", "-c",
-				"jj restore 2>/dev/null; jj new main 2>/dev/null")
 		}
 		return killResultMsg{worker: name}
 	}

@@ -159,13 +159,9 @@ func resetWorkerForReuse(r *RepoContext, worker string) {
 	h, err := OpenWorker(r.workerStateFile(worker))
 	if err != nil {
 		h, _ = CreateIdleWorker(r.workerStateFile(worker))
-	} else {
-		h.Reset()
 	}
-	_ = h
-	wspath := r.workerDir(worker)
-	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-		startBackground(wspath, os.DevNull, "sh", "-c", "jj restore 2>/dev/null; jj new main 2>/dev/null")
+	if h != nil {
+		h.Reclaim(r, worker)
 	}
 }
 
