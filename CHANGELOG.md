@@ -2,9 +2,15 @@
 
 User-visible changes to wsg. Each entry describes what a user (or agent) of the CLI / TUI / `jj-wsx` would notice. Pure internal refactors don't appear here; use `jj log` for the full history.
 
-Entries are dated, newest first. No version numbers - wsg is a personal tool, not a released library.
+Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
-## 2026-06-05
+## 0.1.0 - 2026-06-05
+
+First tagged version. Backfills the user-visible deltas from the architecture-deepening pass landed today (5 candidates: Reclaim, LoadLiveWorker, Launch unification, DispatchGroup methodisation, Pool aggregate) plus the `wsg version` command itself.
+
+### Added
+
+- **`wsg version`.** Prints `wsg <semver>` to stdout. Also responds to `wsg --version`. The current version is the constant `Version` in `cmd/wsg/version.go`.
 
 ### Fixed
 

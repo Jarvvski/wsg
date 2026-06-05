@@ -58,6 +58,8 @@ func main() {
 		cmdInternalComplete(args)
 	case "help", "-h", "--help":
 		cmdHelp()
+	case "version", "--version":
+		cmdVersion()
 	case "":
 		cmdDefault()
 	default:

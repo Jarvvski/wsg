@@ -56,7 +56,8 @@ After modifying, always run `make install` and verify:
 One commit per focused fix/change. **Land automatically when tests pass and `make install` runs clean - don't ask first.** Run:
 
 ```bash
-# 1. If the change is user-visible, prepend an entry to CHANGELOG.md (see below)
+# 1. If the change is user-visible, bump Version in cmd/wsg/version.go AND
+#    prepend an entry to CHANGELOG.md under the new version (see below)
 jj describe -m "<imperative one-liner>"   # name the just-finished change
 jj bookmark set main --to @               # advance local main to that commit
 jj new                                    # ALWAYS follow main movement with a fresh empty @
@@ -66,13 +67,18 @@ jj new                                    # ALWAYS follow main movement with a f
 
 The working copy is always a commit in jj, so "landing" means giving it a description and moving `main` forward. Don't pile unrelated work into one commit - if the next idea is different, it's a new `jj describe` + `jj new` cycle. Commit messages follow the style in `jj log` (short imperative: "Add X", "Fix Y", "Unify Z").
 
-### Changelog updates
+### Versioning and changelog updates
 
-Before `jj describe`, prepend an entry to `CHANGELOG.md` if (and only if) the change is **user-visible**. User-visible means a user of the CLI, TUI, or `jj-wsx` would notice: new commands or flags, behavior changes, bug fixes that change observable output, removed features, output-format changes. Skip the entry for pure refactors, test-only changes, doc tweaks, dependency bumps without behavior change, or anything purely internal.
+wsg uses **semver**, stored as the `Version` constant in `cmd/wsg/version.go` and printed by `wsg version`. Before `jj describe` for a user-visible change, bump the version AND prepend a CHANGELOG.md entry under the new version heading. Both edits ride in the same commit as the change.
 
-Entry format: under today's date heading (`## YYYY-MM-DD` - create if missing, newest first), add a bullet under `### Added`, `### Changed`, `### Fixed`, or `### Removed`. Lead with **bolded one-line summary**, then a sentence of detail, then a parenthesised short commit hash if the change is in a single landed commit (or omit if not yet committed). User-facing wording - what they'll see, not how it was implemented.
+**User-visible means** a user of the CLI, TUI, or `jj-wsx` would notice: new commands or flags, behavior changes, bug fixes that change observable output, removed features, output-format changes. Skip both the version bump and the changelog entry for pure refactors, test-only changes, doc tweaks, dependency bumps without behavior change, or anything purely internal.
 
-The CHANGELOG.md edit goes into the same commit as the change itself, so it's part of the working copy when `jj describe` runs.
+**Bump rule:**
+- **PATCH** (e.g. 0.1.0 → 0.1.1) when the change only adds `### Fixed` entries.
+- **MINOR** (e.g. 0.1.1 → 0.2.0) when the change adds anything to `### Added`, `### Changed`, or `### Removed`.
+- **MAJOR** (1.0.0+) is **locked off** - never bump without explicit owner approval in the conversation. If a change would warrant MAJOR under strict semver (incompatible removal, format break), still bump as MINOR and flag it for the owner; do not unilaterally cross to 1.0.0.
+
+**CHANGELOG format:** under a version heading (`## X.Y.Z - YYYY-MM-DD` - create if the bump is new, otherwise extend the existing heading for the version-in-progress), add a bullet under `### Added`, `### Changed`, `### Fixed`, or `### Removed`. Lead with a **bolded one-line summary**, then a sentence of detail, then a parenthesised short commit hash if the change references a previously landed commit (omit for the change you're about to commit - the hash isn't known yet). User-facing wording - what they'll see, not how it was implemented.
 
 ## Agent skills
 
