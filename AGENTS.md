@@ -56,6 +56,7 @@ After modifying, always run `make install` and verify:
 One commit per focused fix/change. **Land automatically when tests pass and `make install` runs clean - don't ask first.** Run:
 
 ```bash
+# 1. If the change is user-visible, prepend an entry to CHANGELOG.md (see below)
 jj describe -m "<imperative one-liner>"   # name the just-finished change
 jj bookmark set main --to @               # advance local main to that commit
 jj new                                    # ALWAYS follow main movement with a fresh empty @
@@ -64,6 +65,14 @@ jj new                                    # ALWAYS follow main movement with a f
 **Invariant:** every time `main` moves, the very next command is `jj new`. `@` must never *be* the main commit - it must sit one commit above main, empty, ready for the next change. This applies to any workflow that moves `main`, not just this one. If you find `@` on main, immediately `jj new` before editing anything.
 
 The working copy is always a commit in jj, so "landing" means giving it a description and moving `main` forward. Don't pile unrelated work into one commit - if the next idea is different, it's a new `jj describe` + `jj new` cycle. Commit messages follow the style in `jj log` (short imperative: "Add X", "Fix Y", "Unify Z").
+
+### Changelog updates
+
+Before `jj describe`, prepend an entry to `CHANGELOG.md` if (and only if) the change is **user-visible**. User-visible means a user of the CLI, TUI, or `jj-wsx` would notice: new commands or flags, behavior changes, bug fixes that change observable output, removed features, output-format changes. Skip the entry for pure refactors, test-only changes, doc tweaks, dependency bumps without behavior change, or anything purely internal.
+
+Entry format: under today's date heading (`## YYYY-MM-DD` - create if missing, newest first), add a bullet under `### Added`, `### Changed`, `### Fixed`, or `### Removed`. Lead with **bolded one-line summary**, then a sentence of detail, then a parenthesised short commit hash if the change is in a single landed commit (or omit if not yet committed). User-facing wording - what they'll see, not how it was implemented.
+
+The CHANGELOG.md edit goes into the same commit as the change itself, so it's part of the working copy when `jj describe` runs.
 
 ## Agent skills
 

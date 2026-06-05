@@ -1,0 +1,19 @@
+# Changelog
+
+User-visible changes to wsg. Each entry describes what a user (or agent) of the CLI / TUI / `jj-wsx` would notice. Pure internal refactors don't appear here; use `jj log` for the full history.
+
+Entries are dated, newest first. No version numbers - wsg is a personal tool, not a released library.
+
+## 2026-06-05
+
+### Fixed
+
+- **Pool resize no longer races against dispatch.** A concurrent `wsg pool resize` (shrink) and `wsg dispatch` could previously tear down a workspace just as a claude agent was launching in it. Both paths now serialise through the pool mutation lock - either the shrink wins (`cannot shrink: N worker(s) busy`) or the claim wins (`Pool shrunk from X to Y`), never both. (`047337`)
+- **No more stuck `busy` workers.** Every read path (`wsg status`, `wsg pool list`, TUI list, orchestrator polling) reconciles dead PIDs - a worker whose claude process died is immediately moved to `done` or `failed` with the exit code from its log, rather than appearing busy forever. (`7d93f5`)
+- **`wsg pool reset` reliably kills the running agent.** The kill step was inconsistent across reset, TUI `[K]ill`, and orchestrator cleanup; all three now share `WorkerHandle.Reclaim` and terminate the live PID before resetting state.
+- **Dispatch and resume use the same launch path.** Same fg/bg handling, same PID recording, same finalisation on exit, so `wsg dispatch <X>` and `wsg send <worker> "..."` no longer drift on edge cases (process crashes, foreground termination, etc.). (`7a1190`)
+
+### Changed
+
+- **Orchestrated dispatch is more testable.** DAG operations (readiness, wave sizing, sync-from-workers) moved from free functions onto a `DispatchGroup` aggregate. No user-visible behavior change. (`8dac01`)
+- **Send works on idle workers.** `wsg send <worker> "..."` no longer requires the worker to have an existing session - sending to an idle worker triggers a new workload. The TUI's `s` key no longer gates on session existence.
