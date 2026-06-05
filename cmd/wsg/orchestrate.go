@@ -80,7 +80,7 @@ func LoadLiveDispatchGroup(r *RepoContext, parent string) *DispatchGroup {
 	if err != nil {
 		return nil
 	}
-	dg.SyncFromWorkers(r)
+	dg.SyncFromWorkers(newLiveDispatchWorld(r, nil, nil))
 	dg.RevalidateBranches(r)
 	saveDispatchGroup(path, dg)
 	return dg
@@ -244,18 +244,36 @@ func (dg *DispatchGroup) MarkDispatched(ticketID, worker string) {
 
 // ── World-touching ops ─────────────────────────────────────────────
 
-func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
+// DispatchWorld is the side-effecting surface AdvanceOnce drives the
+// dispatch state machine against. Production is liveDispatchWorld, which
+// reads worker state files and shells out to launchWorker. Tests inject a
+// fake to exercise the full machine - including ResetWorker failure paths
+// that are invisible against the live world because Reclaim's errors are
+// swallowed at the call site.
+type DispatchWorld interface {
+	ReadWorker(name string) (*WorkerState, error)
+	ResetWorker(name string) error
+	ClaimWorker(ticket string) (string, error)
+	LaunchWorker(worker, ticket string, depCtx *DependencyContext)
+}
+
+// SyncFromWorkers folds each dispatched sub-issue's worker outcome back
+// into the sub-issue: WorkerStatusDone marks the sub-issue done and
+// records the resolved branch; WorkerStatusFailed retries once before
+// permanent failure. A failure path resets the worker for reuse through
+// world; if the reset itself fails the sub-issue still progresses and the
+// failure is logged.
+func (dg *DispatchGroup) SyncFromWorkers(world DispatchWorld) bool {
 	changed := false
 	for id, si := range dg.SubIssues {
 		if si.Status != SubIssueStatusDispatched || si.Worker == nil {
 			continue
 		}
 		worker := *si.Worker
-		h, err := LoadLiveWorker(r, worker)
+		ws, err := world.ReadWorker(worker)
 		if err != nil {
 			continue
 		}
-		ws := h.Status()
 		switch ws.Status {
 		case WorkerStatusDone:
 			si.Status = SubIssueStatusDone
@@ -266,7 +284,9 @@ func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 			}
 			changed = true
 			info("  %s completed (branch: %s)", colorize(id, colorGreen), ptrOr(si.Branch, "?"))
-			resetWorkerForReuse(r, worker)
+			if rerr := world.ResetWorker(worker); rerr != nil {
+				info("  warning: reset %s for reuse failed: %v", worker, rerr)
+			}
 		case WorkerStatusFailed:
 			if si.Retries < 1 {
 				si.Retries++
@@ -275,7 +295,9 @@ func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 				si.DispatchedAt = nil
 				changed = true
 				info("  %s failed, will auto-retry (attempt %d)", colorize(id, colorYellow), si.Retries+1)
-				resetWorkerForReuse(r, worker)
+				if rerr := world.ResetWorker(worker); rerr != nil {
+					info("  warning: reset %s for reuse failed: %v", worker, rerr)
+				}
 			} else {
 				si.Status = SubIssueStatusFailed
 				now := nowUTC()
@@ -285,6 +307,26 @@ func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 				info("  %s failed after retry: %s", colorize(id, colorRed), errMsg)
 			}
 		}
+	}
+	return changed
+}
+
+// AdvanceOnce drives one tick of the dispatch state machine: syncs every
+// dispatched sub-issue against its worker (with retry+reset), then for
+// each Ready sub-issue claims+launches a worker. Returns true if any
+// state was mutated so the caller can persist before sleeping. This is
+// the seam the watch loop and tests share.
+func (dg *DispatchGroup) AdvanceOnce(world DispatchWorld) bool {
+	changed := dg.SyncFromWorkers(world)
+	for _, tid := range dg.Ready() {
+		worker, err := world.ClaimWorker(tid)
+		if err != nil {
+			info("No idle workers for %s, will retry next cycle", tid)
+			continue
+		}
+		world.LaunchWorker(worker, tid, dg.DepContextFor(tid))
+		dg.MarkDispatched(tid, worker)
+		changed = true
 	}
 	return changed
 }
@@ -314,14 +356,47 @@ func (dg *DispatchGroup) RevalidateBranches(r *RepoContext) {
 	}
 }
 
-func resetWorkerForReuse(r *RepoContext, worker string) {
-	h, err := loadWorker(r, worker)
+// liveDispatchWorld is the production DispatchWorld backed by the on-disk
+// pool: ReadWorker via LoadLiveWorker (with dead-PID reconciliation),
+// ResetWorker via Reclaim, ClaimWorker through the locked Pool, and
+// LaunchWorker through the existing launchWorker shell-out.
+type liveDispatchWorld struct {
+	r    *RepoContext
+	pool *Pool
+	opts *DispatchOpts
+}
+
+func newLiveDispatchWorld(r *RepoContext, pool *Pool, opts *DispatchOpts) *liveDispatchWorld {
+	return &liveDispatchWorld{r: r, pool: pool, opts: opts}
+}
+
+func (w *liveDispatchWorld) ReadWorker(name string) (*WorkerState, error) {
+	h, err := LoadLiveWorker(w.r, name)
 	if err != nil {
-		h, _ = CreateIdleWorker(r, worker)
+		return nil, err
 	}
-	if h != nil {
-		h.Reclaim()
+	return h.Status(), nil
+}
+
+func (w *liveDispatchWorld) ResetWorker(name string) error {
+	h, err := loadWorker(w.r, name)
+	if err != nil {
+		h, err = CreateIdleWorker(w.r, name)
+		if err != nil {
+			return err
+		}
 	}
+	return h.Reclaim()
+}
+
+func (w *liveDispatchWorld) ClaimWorker(ticket string) (string, error) {
+	return w.pool.Claim(ticket)
+}
+
+func (w *liveDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) {
+	ticketOpts := *w.opts
+	ticketOpts.TicketID = ticket
+	launchWorker(w.r, worker, &ticketOpts, depCtx)
 }
 
 // ── Rendering ──────────────────────────────────────────────────────
@@ -514,26 +589,11 @@ func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOp
 }
 
 func watchDispatchGroup(r *RepoContext, p *Pool, dg *DispatchGroup, opts *DispatchOpts) {
+	world := newLiveDispatchWorld(r, p, opts)
 	for {
-		if dg.SyncFromWorkers(r) {
+		if dg.AdvanceOnce(world) {
 			dg.Save(r)
 		}
-
-		for _, tid := range dg.Ready() {
-			worker, err := p.Claim(tid)
-			if err != nil {
-				info("No idle workers for %s, will retry next cycle", tid)
-				continue
-			}
-
-			ticketOpts := *opts
-			ticketOpts.TicketID = tid
-			launchWorker(r, worker, &ticketOpts, dg.DepContextFor(tid))
-
-			dg.MarkDispatched(tid, worker)
-		}
-
-		dg.Save(r)
 
 		if dg.Terminal() {
 			fmt.Fprintln(os.Stderr)

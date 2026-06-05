@@ -501,7 +501,7 @@ func TestSyncGroupFromWorkersCompleted(t *testing.T) {
 		},
 	}
 
-	changed := dg.SyncFromWorkers(r)
+	changed := dg.SyncFromWorkers(newLiveDispatchWorld(r, nil, nil))
 	if !changed {
 		t.Error("expected changed = true")
 	}
@@ -530,7 +530,7 @@ func TestSyncGroupFromWorkersFirstFailureRetries(t *testing.T) {
 		},
 	}
 
-	changed := dg.SyncFromWorkers(r)
+	changed := dg.SyncFromWorkers(newLiveDispatchWorld(r, nil, nil))
 	if !changed {
 		t.Error("expected changed = true")
 	}
@@ -563,7 +563,7 @@ func TestSyncGroupFromWorkersSecondFailurePermanent(t *testing.T) {
 		},
 	}
 
-	changed := dg.SyncFromWorkers(r)
+	changed := dg.SyncFromWorkers(newLiveDispatchWorld(r, nil, nil))
 	if !changed {
 		t.Error("expected changed = true")
 	}
@@ -590,12 +590,273 @@ func TestSyncGroupFromWorkersStillBusy(t *testing.T) {
 		},
 	}
 
-	changed := dg.SyncFromWorkers(r)
+	changed := dg.SyncFromWorkers(newLiveDispatchWorld(r, nil, nil))
 	if changed {
 		t.Error("expected changed = false for still-busy worker")
 	}
 	if dg.SubIssues["AMBA-10"].Status != SubIssueStatusDispatched {
 		t.Errorf("status = %q, want dispatched", dg.SubIssues["AMBA-10"].Status)
+	}
+}
+
+// fakeDispatchWorld is an in-memory DispatchWorld used by AdvanceOnce
+// tests to drive the dispatch state machine without touching disk or
+// shelling out. Each operation records its arguments so a test can
+// assert which workers were reset / claimed / launched.
+type fakeDispatchWorld struct {
+	workers     map[string]*WorkerState
+	resetErr    map[string]error
+	resets      []string
+	claimQueue  []string
+	claimErr    map[string]error
+	claimCalls  []string
+	launchCalls []fakeLaunch
+}
+
+type fakeLaunch struct {
+	worker string
+	ticket string
+	depCtx *DependencyContext
+}
+
+func newFakeDispatchWorld() *fakeDispatchWorld {
+	return &fakeDispatchWorld{
+		workers:  map[string]*WorkerState{},
+		resetErr: map[string]error{},
+		claimErr: map[string]error{},
+	}
+}
+
+func (f *fakeDispatchWorld) ReadWorker(name string) (*WorkerState, error) {
+	if ws, ok := f.workers[name]; ok {
+		return ws, nil
+	}
+	return nil, fmt.Errorf("worker %s not found", name)
+}
+
+func (f *fakeDispatchWorld) ResetWorker(name string) error {
+	f.resets = append(f.resets, name)
+	if err, ok := f.resetErr[name]; ok {
+		return err
+	}
+	if ws, ok := f.workers[name]; ok {
+		ws.Reset()
+	}
+	return nil
+}
+
+func (f *fakeDispatchWorld) ClaimWorker(ticket string) (string, error) {
+	f.claimCalls = append(f.claimCalls, ticket)
+	if err, ok := f.claimErr[ticket]; ok {
+		return "", err
+	}
+	if len(f.claimQueue) == 0 {
+		return "", fmt.Errorf("no idle workers")
+	}
+	picked := f.claimQueue[0]
+	f.claimQueue = f.claimQueue[1:]
+	return picked, nil
+}
+
+func (f *fakeDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) {
+	f.launchCalls = append(f.launchCalls, fakeLaunch{worker, ticket, depCtx})
+}
+
+func TestAdvanceOnceSyncDoneResetsWorker(t *testing.T) {
+	branch := "adam/amba-10-auth"
+	world := newFakeDispatchWorld()
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
+
+	worker := "worker-1"
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth"},
+		},
+	}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("expected changed=true")
+	}
+	si := dg.SubIssues["AMBA-10"]
+	if si.Status != SubIssueStatusDone {
+		t.Errorf("status = %q, want done", si.Status)
+	}
+	if si.Branch == nil || *si.Branch != branch {
+		t.Errorf("branch = %v, want %s", si.Branch, branch)
+	}
+	if len(world.resets) != 1 || world.resets[0] != "worker-1" {
+		t.Errorf("resets = %v, want [worker-1]", world.resets)
+	}
+}
+
+func TestAdvanceOnceSyncFailureRetriesAndResets(t *testing.T) {
+	errMsg := "build failed"
+	world := newFakeDispatchWorld()
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusFailed, Error: &errMsg}
+
+	worker := "worker-1"
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth", Retries: 0},
+		},
+	}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("expected changed=true")
+	}
+	si := dg.SubIssues["AMBA-10"]
+	if si.Status != SubIssueStatusPending {
+		t.Errorf("status = %q, want pending (auto-retry)", si.Status)
+	}
+	if si.Worker != nil {
+		t.Error("worker should be cleared for retry")
+	}
+	if si.Retries != 1 {
+		t.Errorf("retries = %d, want 1", si.Retries)
+	}
+	if len(world.resets) != 1 || world.resets[0] != "worker-1" {
+		t.Errorf("resets = %v, want [worker-1]", world.resets)
+	}
+}
+
+func TestAdvanceOnceSyncSecondFailureNoReset(t *testing.T) {
+	errMsg := "build failed again"
+	world := newFakeDispatchWorld()
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusFailed, Error: &errMsg}
+
+	worker := "worker-1"
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth", Retries: 1},
+		},
+	}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("expected changed=true")
+	}
+	si := dg.SubIssues["AMBA-10"]
+	if si.Status != SubIssueStatusFailed {
+		t.Errorf("status = %q, want failed (no more retries)", si.Status)
+	}
+	if len(world.resets) != 0 {
+		t.Errorf("resets = %v, want [] (permanent failure shouldn't recycle the worker)", world.resets)
+	}
+}
+
+func TestAdvanceOnceResetFailureStillAdvancesSubIssue(t *testing.T) {
+	// The whole reason AdvanceOnce takes an injected world: today
+	// resetWorkerForReuse swallows every error, so a failed Reclaim
+	// leaves the sub-issue marked pending but the worker still busy
+	// on disk - the next claim picks it up and double-dispatches. This
+	// test pins down that the sub-issue progression is independent of
+	// the reset outcome and the failure is at least observable through
+	// the world.
+	errMsg := "build failed"
+	world := newFakeDispatchWorld()
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusFailed, Error: &errMsg}
+	world.resetErr["worker-1"] = fmt.Errorf("workspace dirty")
+
+	worker := "worker-1"
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth", Retries: 0},
+		},
+	}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("expected changed=true even when reset failed")
+	}
+	si := dg.SubIssues["AMBA-10"]
+	if si.Status != SubIssueStatusPending {
+		t.Errorf("status = %q, want pending (retry path still taken)", si.Status)
+	}
+	if si.Retries != 1 {
+		t.Errorf("retries = %d, want 1 (retry counter advances despite reset failure)", si.Retries)
+	}
+	if len(world.resets) != 1 {
+		t.Errorf("resets = %v, want one attempt", world.resets)
+	}
+}
+
+func TestAdvanceOnceClaimsReadySubIssues(t *testing.T) {
+	world := newFakeDispatchWorld()
+	world.claimQueue = []string{"worker-1", "worker-2"}
+
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusPending, Title: "Auth"},
+			"AMBA-11": {Status: SubIssueStatusPending, Title: "API"},
+		},
+	}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("expected changed=true")
+	}
+	for _, id := range []string{"AMBA-10", "AMBA-11"} {
+		si := dg.SubIssues[id]
+		if si.Status != SubIssueStatusDispatched {
+			t.Errorf("%s status = %q, want dispatched", id, si.Status)
+		}
+		if si.Worker == nil {
+			t.Errorf("%s worker not assigned", id)
+		}
+	}
+	if len(world.launchCalls) != 2 {
+		t.Errorf("launchCalls = %d, want 2", len(world.launchCalls))
+	}
+}
+
+func TestAdvanceOnceNoIdleWorkersLeavesPending(t *testing.T) {
+	world := newFakeDispatchWorld()
+	// claimQueue empty -> ClaimWorker returns "no idle workers"
+
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusPending, Title: "Auth"},
+		},
+	}
+
+	if dg.AdvanceOnce(world) {
+		t.Error("expected changed=false when no workers could be claimed")
+	}
+	if dg.SubIssues["AMBA-10"].Status != SubIssueStatusPending {
+		t.Errorf("status = %q, want pending", dg.SubIssues["AMBA-10"].Status)
+	}
+	if len(world.launchCalls) != 0 {
+		t.Errorf("launchCalls = %d, want 0", len(world.launchCalls))
+	}
+}
+
+func TestAdvanceOnceFullLifecycle(t *testing.T) {
+	// Drive a single sub-issue from pending -> dispatched -> done across
+	// successive AdvanceOnce calls, exactly as the watch loop would.
+	world := newFakeDispatchWorld()
+	world.claimQueue = []string{"worker-1"}
+
+	dg := &DispatchGroup{
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusPending, Title: "Auth"},
+		},
+	}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("tick 1: expected changed=true (claim+launch)")
+	}
+	if dg.SubIssues["AMBA-10"].Status != SubIssueStatusDispatched {
+		t.Fatalf("after tick 1: status = %q, want dispatched", dg.SubIssues["AMBA-10"].Status)
+	}
+
+	branch := "adam/amba-10-auth"
+	world.workers["worker-1"] = &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
+
+	if !dg.AdvanceOnce(world) {
+		t.Fatal("tick 2: expected changed=true (sync done)")
+	}
+	if dg.SubIssues["AMBA-10"].Status != SubIssueStatusDone {
+		t.Errorf("after tick 2: status = %q, want done", dg.SubIssues["AMBA-10"].Status)
+	}
+	if !dg.Terminal() {
+		t.Error("group should be terminal after sole sub-issue is done")
 	}
 }
 
