@@ -94,21 +94,14 @@ func cacheRemoveEntry(file string, name string) error {
 }
 
 func cacheRebuild(r *RepoContext) ([]CacheEntry, error) {
-	output, err := run(r.Root, "jj", "workspace", "list")
+	names, err := jjListWorkspaceNames(r.Root)
 	if err != nil {
 		return nil, fmt.Errorf("jj workspace list: %w", err)
 	}
 
 	var entries []CacheEntry
 	hasDefault := false
-	for _, line := range strings.Split(output, "\n") {
-		if line == "" {
-			continue
-		}
-		name := strings.TrimSpace(strings.SplitN(line, ":", 2)[0])
-		if name == "" {
-			continue
-		}
+	for _, name := range names {
 		var wspath string
 		if name == "default" {
 			wspath = r.Root

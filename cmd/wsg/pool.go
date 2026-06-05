@@ -339,17 +339,8 @@ func resolveWorkerBranch(r *RepoContext, worker string, ws *WorkerState) {
 	if ws.BranchName == nil || *ws.BranchName == "" {
 		return
 	}
-	prefix := "adam/" + *ws.BranchName + "-"
-	wspath := r.workerDir(worker)
-	output, err := run(wspath, "jj", "bookmark", "list", "--template", `name ++ "\n"`)
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			ws.BranchName = &line
-			return
-		}
+	if resolved := jjResolveBranchForTicket(r.workerDir(worker), *ws.BranchName); resolved != nil {
+		ws.BranchName = resolved
 	}
 }
 
@@ -523,7 +514,7 @@ func (p *Pool) grow(newSize int) error {
 	for i := 0; i < newSize-oldSize; i++ {
 		name := generateWorkerName()
 		wspath := r.workerDir(name)
-		if _, err := run(r.Root, "jj", "workspace", "add", wspath); err != nil {
+		if err := jjAddWorkspace(r.Root, wspath, ""); err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
 		}
 		p.cfg.Workers = append(p.cfg.Workers, name)
@@ -666,7 +657,7 @@ func (p *Pool) Destroy() error {
 func (p *Pool) tearDownWorker(worker string) {
 	r := p.repo
 	wspath := r.workerDir(worker)
-	run(r.Root, "jj", "workspace", "forget", worker)
+	jjForgetWorkspace(r.Root, worker)
 	cacheRemoveEntry(r.cacheFile(), worker)
 	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 		os.RemoveAll(wspath)
@@ -680,27 +671,7 @@ func ghRepo(r *RepoContext) string {
 	if cfg, err := loadPoolConfig(configFile); err == nil && cfg.GHRepo != "" {
 		return strings.TrimSuffix(cfg.GHRepo, ".git")
 	}
-	output, err := run(r.Root, "jj", "git", "remote", "list")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "origin" {
-			url := fields[1]
-			url = strings.TrimSuffix(url, ".git")
-			if idx := strings.LastIndex(url, ":"); idx != -1 {
-				url = url[idx+1:]
-			} else if idx := strings.LastIndex(url, "/"); idx != -1 {
-				parts := strings.Split(url, "/")
-				if len(parts) >= 2 {
-					url = parts[len(parts)-2] + "/" + parts[len(parts)-1]
-				}
-			}
-			return url
-		}
-	}
-	return ""
+	return jjRemoteOrigin(r.Root)
 }
 
 func nowUTC() string {

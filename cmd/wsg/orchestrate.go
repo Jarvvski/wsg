@@ -294,8 +294,7 @@ func (dg *DispatchGroup) RevalidateBranches(r *RepoContext) {
 		if si.Branch == nil || *si.Branch == "main" {
 			continue
 		}
-		output, err := run(r.Root, "jj", "log", "-r", *si.Branch, "--no-graph", "-T", `"ok"`, "--limit", "1")
-		if err != nil || !strings.Contains(output, "ok") {
+		if !jjRevExists(r.Root, *si.Branch) {
 			if isMergedStatus(ptrOr(si.SkipReason, "")) {
 				main := "main"
 				si.Branch = &main
@@ -514,17 +513,7 @@ func isMergedStatus(status string) bool {
 }
 
 func resolveExistingBranch(r *RepoContext, ticketID string) *string {
-	prefix := "adam/" + strings.ToLower(ticketID) + "-"
-	output, err := run(r.Root, "jj", "bookmark", "list", "--template", `name ++ "\n"`)
-	if err != nil {
-		return nil
-	}
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return &line
-		}
-	}
-	return nil
+	return jjResolveBranchForTicket(r.Root, strings.ToLower(ticketID))
 }
 
 func extractJSON(s string) string {

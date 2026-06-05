@@ -204,12 +204,11 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	wspath := r.workerDir(worker)
 
 	if depCtx != nil && len(depCtx.BaseBranches) > 0 {
-		jjArgs := append([]string{"new"}, depCtx.BaseBranches...)
-		if _, err := run(wspath, "jj", jjArgs...); err != nil {
+		if err := jjNewOn(wspath, depCtx.BaseBranches...); err != nil {
 			fatal("Failed to set %s to base branches %v: %v", worker, depCtx.BaseBranches, err)
 		}
 	} else {
-		if _, err := run(wspath, "jj", "new", "main"); err != nil {
+		if err := jjNewOn(wspath, "main"); err != nil {
 			fatal("Failed to reset %s to main: %v", worker, err)
 		}
 	}

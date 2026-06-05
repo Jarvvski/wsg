@@ -66,13 +66,7 @@ func cmdAdd(args []string) {
 
 	os.MkdirAll(r.BaseDir, 0755)
 
-	jjArgs := []string{"workspace", "add"}
-	if *revision != "" {
-		jjArgs = append(jjArgs, "--revision", *revision)
-	}
-	jjArgs = append(jjArgs, wspath)
-
-	if _, err := run(r.Root, "jj", jjArgs...); err != nil {
+	if err := jjAddWorkspace(r.Root, wspath, *revision); err != nil {
 		fatal("jj workspace add: %v", err)
 	}
 
@@ -146,7 +140,7 @@ func cmdRm(args []string) {
 				}
 			}
 		}
-		run(r.Root, "jj", "workspace", "forget", name)
+		jjForgetWorkspace(r.Root, name)
 		cacheRemoveEntry(r.cacheFile(), name)
 		if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 			os.RemoveAll(wspath)

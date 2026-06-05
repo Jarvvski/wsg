@@ -137,10 +137,6 @@ func unwrapClaudeJSON(output string) string {
 	return extractJSON(output)
 }
 
-func jjConfigGet(dir string, key string) (string, error) {
-	return run(dir, "jj", "config", "get", key)
-}
-
 func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }

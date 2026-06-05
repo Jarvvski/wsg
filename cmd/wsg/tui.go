@@ -568,11 +568,11 @@ func (m tuiModel) doRebase(w *tuiWorker) tea.Cmd {
 	branch := *w.state.BranchName
 	wspath := m.repo.workerDir(name)
 	return func() tea.Msg {
-		if _, err := run(wspath, "jj", "rebase", "-b", branch, "-d", "main"); err != nil {
+		if err := jjRebase(wspath, branch, "main"); err != nil {
 			return rebaseResultMsg{worker: name, err: err}
 		}
-		if _, err := run(wspath, "jj", "git", "push", "-b", branch); err != nil {
-			run(wspath, "jj", "op", "undo")
+		if err := jjPush(wspath, branch); err != nil {
+			jjOpUndo(wspath)
 			return rebaseResultMsg{worker: name, err: fmt.Errorf("rebase caused conflicts, reverted - use [r]eview instead")}
 		}
 		return rebaseResultMsg{worker: name}
