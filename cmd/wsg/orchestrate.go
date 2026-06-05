@@ -19,15 +19,15 @@ type DispatchGroup struct {
 }
 
 type SubIssueState struct {
-	Title        string   `json:"title"`
-	Status       string   `json:"status"`
-	BlockedBy    []string `json:"blocked_by"`
-	Worker       *string  `json:"worker"`
-	Branch       *string  `json:"branch"`
-	DispatchedAt *string  `json:"dispatched_at"`
-	CompletedAt  *string  `json:"completed_at"`
-	SkipReason   *string  `json:"skip_reason,omitempty"`
-	Retries      int      `json:"retries"`
+	Title        string         `json:"title"`
+	Status       SubIssueStatus `json:"status"`
+	BlockedBy    []string       `json:"blocked_by"`
+	Worker       *string        `json:"worker"`
+	Branch       *string        `json:"branch"`
+	DispatchedAt *string        `json:"dispatched_at"`
+	CompletedAt  *string        `json:"completed_at"`
+	SkipReason   *string        `json:"skip_reason,omitempty"`
+	Retries      int            `json:"retries"`
 }
 
 type DispatchGroupOpts struct {
@@ -95,7 +95,7 @@ func (dg *DispatchGroup) Save(r *RepoContext) error {
 func (dg *DispatchGroup) Ready() []string {
 	var ready []string
 	for id, si := range dg.SubIssues {
-		if si.Status != "pending" {
+		if si.Status != SubIssueStatusPending {
 			continue
 		}
 		allMet := true
@@ -104,7 +104,7 @@ func (dg *DispatchGroup) Ready() []string {
 			if !ok {
 				continue
 			}
-			if depState.Status != "done" && depState.Status != "skipped" {
+			if !depState.Status.Unblocks() {
 				allMet = false
 				break
 			}
@@ -120,7 +120,7 @@ func (dg *DispatchGroup) Ready() []string {
 func (dg *DispatchGroup) MaxWaveSize() int {
 	resolved := make(map[string]bool)
 	for id, si := range dg.SubIssues {
-		if si.Status == "skipped" {
+		if si.Status == SubIssueStatusSkipped {
 			resolved[id] = true
 		}
 	}
@@ -129,7 +129,7 @@ func (dg *DispatchGroup) MaxWaveSize() int {
 	for {
 		var wave []string
 		for id, si := range dg.SubIssues {
-			if resolved[id] || si.Status == "skipped" {
+			if resolved[id] || si.Status == SubIssueStatusSkipped {
 				continue
 			}
 			allMet := true
@@ -158,7 +158,7 @@ func (dg *DispatchGroup) MaxWaveSize() int {
 
 func (dg *DispatchGroup) Terminal() bool {
 	for _, si := range dg.SubIssues {
-		if si.Status == "pending" || si.Status == "dispatched" {
+		if si.Status.IsActive() {
 			return false
 		}
 	}
@@ -168,11 +168,11 @@ func (dg *DispatchGroup) Terminal() bool {
 func (dg *DispatchGroup) CountStatuses() (done, failed, skipped int) {
 	for _, si := range dg.SubIssues {
 		switch si.Status {
-		case "done":
+		case SubIssueStatusDone:
 			done++
-		case "failed":
+		case SubIssueStatusFailed:
 			failed++
-		case "skipped":
+		case SubIssueStatusSkipped:
 			skipped++
 		}
 	}
@@ -236,7 +236,7 @@ func (dg *DispatchGroup) MarkDispatched(ticketID, worker string) {
 	if si == nil {
 		return
 	}
-	si.Status = "dispatched"
+	si.Status = SubIssueStatusDispatched
 	si.Worker = &worker
 	now := nowUTC()
 	si.DispatchedAt = &now
@@ -247,7 +247,7 @@ func (dg *DispatchGroup) MarkDispatched(ticketID, worker string) {
 func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 	changed := false
 	for id, si := range dg.SubIssues {
-		if si.Status != "dispatched" || si.Worker == nil {
+		if si.Status != SubIssueStatusDispatched || si.Worker == nil {
 			continue
 		}
 		worker := *si.Worker
@@ -257,8 +257,8 @@ func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 		}
 		ws := h.Status()
 		switch ws.Status {
-		case "done":
-			si.Status = "done"
+		case WorkerStatusDone:
+			si.Status = SubIssueStatusDone
 			now := nowUTC()
 			si.CompletedAt = &now
 			if ws.BranchName != nil {
@@ -267,17 +267,17 @@ func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 			changed = true
 			info("  %s completed (branch: %s)", colorize(id, colorGreen), ptrOr(si.Branch, "?"))
 			resetWorkerForReuse(r, worker)
-		case "failed":
+		case WorkerStatusFailed:
 			if si.Retries < 1 {
 				si.Retries++
-				si.Status = "pending"
+				si.Status = SubIssueStatusPending
 				si.Worker = nil
 				si.DispatchedAt = nil
 				changed = true
 				info("  %s failed, will auto-retry (attempt %d)", colorize(id, colorYellow), si.Retries+1)
 				resetWorkerForReuse(r, worker)
 			} else {
-				si.Status = "failed"
+				si.Status = SubIssueStatusFailed
 				now := nowUTC()
 				si.CompletedAt = &now
 				changed = true
@@ -357,15 +357,15 @@ func (dg *DispatchGroup) PrintStatus() {
 
 		paddedStatus := fmt.Sprintf("%-12s", si.Status)
 		switch si.Status {
-		case "pending":
+		case SubIssueStatusPending:
 			paddedStatus = colorize(paddedStatus, colorDim)
-		case "dispatched":
+		case SubIssueStatusDispatched:
 			paddedStatus = colorize(paddedStatus, colorYellow)
-		case "done":
+		case SubIssueStatusDone:
 			paddedStatus = colorize(paddedStatus, colorGreen)
-		case "failed":
+		case SubIssueStatusFailed:
 			paddedStatus = colorize(paddedStatus, colorRed)
-		case "skipped":
+		case SubIssueStatusSkipped:
 			paddedStatus = colorize(paddedStatus, colorDim)
 		}
 
@@ -425,15 +425,15 @@ func BuildDispatchGroup(r *RepoContext, parent string, opts *DispatchOpts) (*Dis
 	for id, si := range entries {
 		state := &SubIssueState{
 			Title:     si.Title,
-			Status:    "pending",
+			Status:    SubIssueStatusPending,
 			BlockedBy: si.BlockedBy,
 		}
 		if si.CrossRepo {
-			state.Status = "skipped"
+			state.Status = SubIssueStatusSkipped
 			reason := "cross-repo"
 			state.SkipReason = &reason
 		} else if !isDispatchableStatus(si.Status) {
-			state.Status = "skipped"
+			state.Status = SubIssueStatusSkipped
 			reason := si.Status
 			state.SkipReason = &reason
 			if isMergedStatus(si.Status) {

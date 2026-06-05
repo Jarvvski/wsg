@@ -17,7 +17,7 @@ func TestActionsResetIdleWorker(t *testing.T) {
 	}
 
 	ws, _ := loadWorkerState(r.workerStateFile("worker-1"))
-	if ws.Status != "idle" {
+	if ws.Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", ws.Status)
 	}
 }
@@ -33,7 +33,7 @@ func TestActionsResetClearsTerminalState(t *testing.T) {
 	}
 
 	loaded, _ := loadWorkerState(r.workerStateFile("worker-1"))
-	if loaded.Status != "idle" {
+	if loaded.Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", loaded.Status)
 	}
 	if loaded.Error != nil {
@@ -73,7 +73,7 @@ func TestActionsDismissIdleRemovesFromPool(t *testing.T) {
 }
 
 func TestActionsDismissTerminalWorkerResetsInPlace(t *testing.T) {
-	failedWS := &WorkerState{Status: "failed"}
+	failedWS := &WorkerState{Status: WorkerStatusFailed}
 	r := setupPoolWithStates(t, map[string]*WorkerState{
 		"worker-1": newIdleWorkerState(),
 		"worker-2": failedWS,
@@ -92,7 +92,7 @@ func TestActionsDismissTerminalWorkerResetsInPlace(t *testing.T) {
 		t.Errorf("pool size = %d, want 2 (worker stays)", len(cfg.Workers))
 	}
 	ws, _ := loadWorkerState(r.workerStateFile("worker-2"))
-	if ws.Status != "idle" {
+	if ws.Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", ws.Status)
 	}
 }
@@ -100,7 +100,7 @@ func TestActionsDismissTerminalWorkerResetsInPlace(t *testing.T) {
 func TestActionsDismissBusyErrors(t *testing.T) {
 	ticket := "AMBA-1"
 	r := setupPoolWithStates(t, map[string]*WorkerState{
-		"worker-1": {Status: "busy", Ticket: &ticket},
+		"worker-1": {Status: WorkerStatusBusy, Ticket: &ticket},
 	})
 	if _, err := NewActions(r).Dismiss("worker-1"); err == nil {
 		t.Fatal("expected error for busy worker")

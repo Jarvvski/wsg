@@ -105,13 +105,13 @@ func TestSyncDispatchGroup(t *testing.T) {
 		SubIssues: map[string]*SubIssueState{
 			"AMBA-10": {
 				Title:  "Do the thing",
-				Status: "dispatched",
+				Status: SubIssueStatusDispatched,
 				Worker: &worker,
 			},
 		},
 	}
 
-	ws := &WorkerState{Status: "done", BranchName: &branch}
+	ws := &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
 	saveWorkerState(filepath.Join(poolDir, worker+".json"), ws)
 
 	dgFile := filepath.Join(poolDir, "dispatch-amba-9.json")
@@ -121,7 +121,7 @@ func TestSyncDispatchGroup(t *testing.T) {
 	if synced == nil {
 		t.Fatal("expected non-nil group")
 	}
-	if synced.SubIssues["AMBA-10"].Status != "done" {
+	if synced.SubIssues["AMBA-10"].Status != SubIssueStatusDone {
 		t.Errorf("sub-issue status = %q, want done", synced.SubIssues["AMBA-10"].Status)
 	}
 }

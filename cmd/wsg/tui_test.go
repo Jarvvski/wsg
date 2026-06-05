@@ -48,12 +48,12 @@ func TestTUIViewRendersWorkerList(t *testing.T) {
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": newIdleWorkerState(),
 		"worker-bbb": {
-			Status:    "busy",
+			Status:    WorkerStatusBusy,
 			Ticket:    &ticket,
 			StartedAt: &startedAt,
 		},
 		"worker-ccc": {
-			Status:      "done",
+			Status:      WorkerStatusDone,
 			Ticket:      &ticket,
 			StartedAt:   &startedAt,
 			CompletedAt: &completedAt,
@@ -185,7 +185,7 @@ func TestTUIRebaseGatingBusyWorker(t *testing.T) {
 	startedAt := "2026-05-20T14:00:00Z"
 
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "busy", Ticket: &ticket, StartedAt: &startedAt},
+		"worker-aaa": {Status: WorkerStatusBusy, Ticket: &ticket, StartedAt: &startedAt},
 	})
 
 	m := newTUIModel(r)
@@ -205,7 +205,7 @@ func TestTUIRebaseAllowedOnDoneWorker(t *testing.T) {
 
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": {
-			Status:      "done",
+			Status:      WorkerStatusDone,
 			Ticket:      &ticket,
 			StartedAt:   &startedAt,
 			CompletedAt: &completedAt,
@@ -242,7 +242,7 @@ func TestTUIResetBlockedForBusyWorker(t *testing.T) {
 	ticket := "AMBA-42"
 	startedAt := "2026-05-20T14:00:00Z"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "busy", Ticket: &ticket, StartedAt: &startedAt},
+		"worker-aaa": {Status: WorkerStatusBusy, Ticket: &ticket, StartedAt: &startedAt},
 	})
 
 	m := newTUIModel(r)
@@ -262,7 +262,7 @@ func TestTUIResetDoneWorker(t *testing.T) {
 
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": {
-			Status:      "done",
+			Status:      WorkerStatusDone,
 			Ticket:      &ticket,
 			StartedAt:   &startedAt,
 			CompletedAt: &completedAt,
@@ -284,7 +284,7 @@ func TestTUIResetDoneWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load worker state: %v", err)
 	}
-	if ws.Status != "idle" {
+	if ws.Status != WorkerStatusIdle {
 		t.Errorf("worker status = %q, want idle", ws.Status)
 	}
 }
@@ -295,7 +295,7 @@ func TestTUIKillBusyWorker(t *testing.T) {
 	logFile := "/tmp/test.log"
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": {
-			Status:    "busy",
+			Status:    WorkerStatusBusy,
 			Ticket:    &ticket,
 			StartedAt: &startedAt,
 			LogFile:   &logFile,
@@ -326,7 +326,7 @@ func TestTUIKillBusyWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load worker state: %v", err)
 	}
-	if ws.Status != "idle" {
+	if ws.Status != WorkerStatusIdle {
 		t.Errorf("worker status = %q, want idle", ws.Status)
 	}
 }
@@ -349,7 +349,7 @@ func TestTUIDispatchNoIdleWorkers(t *testing.T) {
 	ticket := "AMBA-1"
 	startedAt := "2026-05-20T14:00:00Z"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "busy", Ticket: &ticket, StartedAt: &startedAt},
+		"worker-aaa": {Status: WorkerStatusBusy, Ticket: &ticket, StartedAt: &startedAt},
 	})
 
 	m := newTUIModel(r)
@@ -382,7 +382,7 @@ func TestTUIDispatchEscCancels(t *testing.T) {
 func TestTUIFollowSwitchesToTailView(t *testing.T) {
 	logFile := "/tmp/test.log"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "busy", LogFile: &logFile},
+		"worker-aaa": {Status: WorkerStatusBusy, LogFile: &logFile},
 	})
 
 	m := newTUIModel(r)
@@ -397,7 +397,7 @@ func TestTUIFollowSwitchesToTailView(t *testing.T) {
 func TestTUITailViewQReturnsToList(t *testing.T) {
 	logFile := "/tmp/test.log"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "busy", LogFile: &logFile},
+		"worker-aaa": {Status: WorkerStatusBusy, LogFile: &logFile},
 	})
 
 	m := newTUIModel(r)
@@ -419,7 +419,7 @@ func TestTUITailViewQReturnsToList(t *testing.T) {
 func TestTUITailViewEscReturnsToList(t *testing.T) {
 	logFile := "/tmp/test.log"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "busy", LogFile: &logFile},
+		"worker-aaa": {Status: WorkerStatusBusy, LogFile: &logFile},
 	})
 
 	m := newTUIModel(r)
@@ -438,7 +438,7 @@ func TestTUISendOpensInputView(t *testing.T) {
 	logFile := "/tmp/test.log"
 	ticket := "AMBA-1"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "done", Ticket: &ticket, LogFile: &logFile},
+		"worker-aaa": {Status: WorkerStatusDone, Ticket: &ticket, LogFile: &logFile},
 	})
 
 	m := newTUIModel(r)
@@ -454,7 +454,7 @@ func TestTUIInputViewEscCancels(t *testing.T) {
 	logFile := "/tmp/test.log"
 	ticket := "AMBA-1"
 	r := setupTestPool(t, map[string]*WorkerState{
-		"worker-aaa": {Status: "done", Ticket: &ticket, LogFile: &logFile},
+		"worker-aaa": {Status: WorkerStatusDone, Ticket: &ticket, LogFile: &logFile},
 	})
 
 	m := newTUIModel(r)
@@ -479,7 +479,7 @@ func TestTUITickRefreshesWorkerState(t *testing.T) {
 	})
 
 	m := newTUIModel(r)
-	if m.workers[0].state.Status != "idle" {
+	if m.workers[0].state.Status != WorkerStatusIdle {
 		t.Fatalf("initial status = %q, want idle", m.workers[0].state.Status)
 	}
 
@@ -487,7 +487,7 @@ func TestTUITickRefreshesWorkerState(t *testing.T) {
 	ticket := "AMBA-99"
 	startedAt := "2026-05-22T10:00:00Z"
 	saveWorkerState(r.workerStateFile("worker-aaa"), &WorkerState{
-		Status:    "busy",
+		Status:    WorkerStatusBusy,
 		Ticket:    &ticket,
 		StartedAt: &startedAt,
 	})
@@ -496,7 +496,7 @@ func TestTUITickRefreshesWorkerState(t *testing.T) {
 	updated, _ := m.Update(tickMsg{})
 	m = updated.(tuiModel)
 
-	if m.workers[0].state.Status != "busy" {
+	if m.workers[0].state.Status != WorkerStatusBusy {
 		t.Errorf("after tick: status = %q, want busy", m.workers[0].state.Status)
 	}
 	if m.workers[0].state.Ticket == nil || *m.workers[0].state.Ticket != "AMBA-99" {
@@ -598,7 +598,7 @@ func TestTUIModelLoadsFromDisk(t *testing.T) {
 	saveWorkerState(filepath.Join(poolDir, "worker-first.json"), newIdleWorkerState())
 	ticket := "AMBA-1"
 	saveWorkerState(filepath.Join(poolDir, "worker-second.json"), &WorkerState{
-		Status: "busy",
+		Status: WorkerStatusBusy,
 		Ticket: &ticket,
 	})
 
@@ -609,7 +609,7 @@ func TestTUIModelLoadsFromDisk(t *testing.T) {
 	if m.workers[0].name != "worker-first" {
 		t.Errorf("first worker = %q, want worker-first", m.workers[0].name)
 	}
-	if m.workers[1].state.Status != "busy" {
+	if m.workers[1].state.Status != WorkerStatusBusy {
 		t.Errorf("second worker status = %q, want busy", m.workers[1].state.Status)
 	}
 }

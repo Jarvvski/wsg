@@ -287,7 +287,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if w == nil {
 			return m, nil
 		}
-		if w.state.Status == "busy" {
+		if w.state.Status.IsActive() {
 			m.status = "Cannot rebase: worker is busy"
 			return m, nil
 		}
@@ -306,7 +306,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "No branch - run a dispatch first"
 			return m, nil
 		}
-		if w.state.Status == "busy" {
+		if w.state.Status.IsActive() {
 			m.status = "Cannot review: worker is busy"
 			return m, nil
 		}
@@ -327,7 +327,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if w == nil {
 			return m, nil
 		}
-		if w.state.Status == "busy" {
+		if w.state.Status.IsActive() {
 			m.status = "Worker is busy"
 			return m, nil
 		}
@@ -369,7 +369,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if w == nil {
 			return m, nil
 		}
-		if w.state.Status == "busy" {
+		if w.state.Status.IsActive() {
 			m.status = "Cannot dismiss: worker is busy"
 			return m, nil
 		}
@@ -777,13 +777,13 @@ func (m tuiModel) renderList() string {
 		paddedStatus := fmt.Sprintf("%-10s", status)
 		if isTTY {
 			switch status {
-			case "idle":
+			case WorkerStatusIdle:
 				paddedStatus = colorize(paddedStatus, colorDim)
-			case "busy":
+			case WorkerStatusBusy:
 				paddedStatus = colorize(paddedStatus, colorYellow)
-			case "done":
+			case WorkerStatusDone:
 				paddedStatus = colorize(paddedStatus, colorGreen)
-			case "failed":
+			case WorkerStatusFailed:
 				paddedStatus = colorize(paddedStatus, colorRed)
 			}
 		}

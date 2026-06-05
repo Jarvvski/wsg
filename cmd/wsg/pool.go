@@ -22,15 +22,15 @@ type PoolConfig struct {
 }
 
 type WorkerState struct {
-	Status      string  `json:"status"`
-	Ticket      *string `json:"ticket"`
-	PID         *int    `json:"pid"`
-	StartedAt   *string `json:"started_at"`
-	CompletedAt *string `json:"completed_at"`
-	LogFile     *string `json:"log_file"`
-	BranchName  *string `json:"branch_name"`
-	ExitCode    *int    `json:"exit_code"`
-	Error       *string `json:"error"`
+	Status      WorkerStatus `json:"status"`
+	Ticket      *string      `json:"ticket"`
+	PID         *int         `json:"pid"`
+	StartedAt   *string      `json:"started_at"`
+	CompletedAt *string      `json:"completed_at"`
+	LogFile     *string      `json:"log_file"`
+	BranchName  *string      `json:"branch_name"`
+	ExitCode    *int         `json:"exit_code"`
+	Error       *string      `json:"error"`
 }
 
 func resolveForeground(r *RepoContext, flag *bool) bool {
@@ -44,12 +44,12 @@ func resolveForeground(r *RepoContext, flag *bool) bool {
 }
 
 func newIdleWorkerState() *WorkerState {
-	return &WorkerState{Status: "idle"}
+	return &WorkerState{Status: WorkerStatusIdle}
 }
 
 func (ws *WorkerState) MarkDispatched(ticket, logFile, branchName string) {
 	now := nowUTC()
-	ws.Status = "busy"
+	ws.Status = WorkerStatusBusy
 	ws.Ticket = &ticket
 	ws.StartedAt = &now
 	ws.LogFile = &logFile
@@ -62,14 +62,14 @@ func (ws *WorkerState) MarkDispatched(ticket, logFile, branchName string) {
 
 func (ws *WorkerState) MarkDone(exitCode int) {
 	now := nowUTC()
-	ws.Status = "done"
+	ws.Status = WorkerStatusDone
 	ws.CompletedAt = &now
 	ws.ExitCode = &exitCode
 }
 
 func (ws *WorkerState) MarkFailed(exitCode int, errMsg string) {
 	now := nowUTC()
-	ws.Status = "failed"
+	ws.Status = WorkerStatusFailed
 	ws.CompletedAt = &now
 	ws.ExitCode = &exitCode
 	ws.Error = &errMsg
@@ -80,12 +80,12 @@ func (ws *WorkerState) SetPID(pid int) {
 }
 
 func (ws *WorkerState) Reset() {
-	*ws = WorkerState{Status: "idle"}
+	*ws = WorkerState{Status: WorkerStatusIdle}
 }
 
 func (ws *WorkerState) MarkResumed(logFile string) {
 	now := nowUTC()
-	ws.Status = "busy"
+	ws.Status = WorkerStatusBusy
 	ws.StartedAt = &now
 	ws.LogFile = &logFile
 	ws.CompletedAt = nil
@@ -273,7 +273,7 @@ func saveWorkerState(path string, ws *WorkerState) error {
 // recorded PID is no longer alive the handle is finalised from the log.
 func (h *WorkerHandle) checkLiveness() {
 	ws := h.state
-	if ws.Status != "busy" || ws.PID == nil {
+	if ws.Status != WorkerStatusBusy || ws.PID == nil {
 		return
 	}
 	if processAlive(*ws.PID) {
@@ -307,7 +307,7 @@ func (h *WorkerHandle) finalizeFromLog() {
 	ws := h.state
 	if ws.LogFile != nil {
 		if result := readLogResult(*ws.LogFile); result != nil {
-			if result.Status == "done" {
+			if result.Status == WorkerStatusDone {
 				ec := 0
 				if result.ExitCode != nil {
 					ec = *result.ExitCode
@@ -407,7 +407,7 @@ func (h *WorkerHandle) runBG(wspath, logFile string, claudeArgs []string) (int, 
 		if err != nil {
 			return
 		}
-		if h2.state.Status == "busy" {
+		if h2.state.Status == WorkerStatusBusy {
 			h2.finalizeFromLog()
 		}
 	}()
@@ -487,13 +487,13 @@ func (p *Pool) Snapshot() *PoolSnapshot {
 			continue
 		}
 		switch h.Status().Status {
-		case "idle":
+		case WorkerStatusIdle:
 			snap.Idle++
-		case "busy":
+		case WorkerStatusBusy:
 			snap.Busy++
-		case "done":
+		case WorkerStatusDone:
 			snap.Done++
-		case "failed":
+		case WorkerStatusFailed:
 			snap.Failed++
 		}
 	}
@@ -539,7 +539,7 @@ func (p *Pool) Claim(ticket string) (string, error) {
 			if err != nil {
 				continue
 			}
-			if ws.Status != "idle" {
+			if ws.Status != WorkerStatusIdle {
 				continue
 			}
 			logFile := filepath.Join(poolDir, worker+".log")
@@ -625,8 +625,7 @@ func (p *Pool) shrink(newSize int) error {
 			removable = append(removable, name)
 			continue
 		}
-		s := h.Status().Status
-		if s == "idle" || s == "done" || s == "failed" {
+		if h.Status().Status.IsRemovable() {
 			removable = append(removable, name)
 		} else {
 			nonBusy++
@@ -677,7 +676,7 @@ func (p *Pool) Remove(worker string) (int, error) {
 			return fmt.Errorf("worker %s not in pool", worker)
 		}
 		if h, err := LoadLiveWorker(p.repo, worker); err == nil {
-			if h.Status().Status == "busy" {
+			if h.Status().Status.IsActive() {
 				return fmt.Errorf("worker %s is busy. Reset it first: wsg pool reset %s", worker, worker)
 			}
 		}
@@ -865,26 +864,26 @@ func cmdPoolList() {
 
 		paddedStatus := fmt.Sprintf("%-10s", ws.Status)
 		switch ws.Status {
-		case "idle":
+		case WorkerStatusIdle:
 			paddedStatus = colorize(paddedStatus, colorDim)
-		case "busy":
+		case WorkerStatusBusy:
 			paddedStatus = colorize(paddedStatus, colorYellow)
-		case "done":
+		case WorkerStatusDone:
 			paddedStatus = colorize(paddedStatus, colorGreen)
-		case "failed":
+		case WorkerStatusFailed:
 			paddedStatus = colorize(paddedStatus, colorRed)
 		}
 
 		fmt.Printf("%-10s %s %-14s %s\n", displayWorker(worker), paddedStatus, ticket, elapsed)
 
 		switch ws.Status {
-		case "idle":
+		case WorkerStatusIdle:
 			idle++
-		case "busy":
+		case WorkerStatusBusy:
 			busy++
-		case "done":
+		case WorkerStatusDone:
 			doneCount++
-		case "failed":
+		case WorkerStatusFailed:
 			failed++
 		}
 	}

@@ -19,7 +19,7 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 	}
 
 	ws := h.Status()
-	if ws.Status == "busy" {
+	if ws.Status.IsActive() {
 		return 0, fmt.Errorf("worker %s is busy", displayWorker(worker))
 	}
 

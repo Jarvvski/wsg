@@ -109,9 +109,9 @@ func (a *WorkerActions) Dismiss(worker string) (int, error) {
 		return -1, err
 	}
 	switch h.Status().Status {
-	case "busy":
+	case WorkerStatusBusy:
 		return -1, fmt.Errorf("worker %s is busy", worker)
-	case "idle":
+	case WorkerStatusIdle:
 		p, err := OpenPool(a.repo)
 		if err != nil {
 			return -1, err

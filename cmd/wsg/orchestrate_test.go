@@ -127,7 +127,7 @@ func TestCheckWorkerLivenessDeadProcessSuccessLog(t *testing.T) {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
 
-	if h.Status().Status != "done" {
+	if h.Status().Status != WorkerStatusDone {
 		t.Errorf("status = %q, want done", h.Status().Status)
 	}
 	if h.Status().ExitCode == nil || *h.Status().ExitCode != 0 {
@@ -155,7 +155,7 @@ func TestCheckWorkerLivenessDeadProcessFailLog(t *testing.T) {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
 
-	if h.Status().Status != "failed" {
+	if h.Status().Status != WorkerStatusFailed {
 		t.Errorf("status = %q, want failed", h.Status().Status)
 	}
 	if h.Status().Error == nil || *h.Status().Error != "crashed" {
@@ -183,7 +183,7 @@ func TestCheckWorkerLivenessDeadProcessNoLog(t *testing.T) {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
 
-	if h.Status().Status != "failed" {
+	if h.Status().Status != WorkerStatusFailed {
 		t.Errorf("status = %q, want failed (process exited unexpectedly)", h.Status().Status)
 	}
 	if h.Status().Error == nil || *h.Status().Error != "Process exited unexpectedly" {
@@ -205,7 +205,7 @@ func TestCheckWorkerLivenessIdleWorkerUnchanged(t *testing.T) {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
 
-	if h.Status().Status != "idle" {
+	if h.Status().Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle (should not change)", h.Status().Status)
 	}
 }
@@ -213,8 +213,8 @@ func TestCheckWorkerLivenessIdleWorkerUnchanged(t *testing.T) {
 func TestReadyToDispatchNoDeps(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "pending", BlockedBy: nil},
-			"AMBA-11": {Status: "pending", BlockedBy: nil},
+			"AMBA-10": {Status: SubIssueStatusPending, BlockedBy: nil},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: nil},
 		},
 	}
 	ready := dg.Ready()
@@ -229,9 +229,9 @@ func TestReadyToDispatchNoDeps(t *testing.T) {
 func TestReadyToDispatchWithDeps(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "pending", BlockedBy: nil},
-			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
-			"AMBA-12": {Status: "pending", BlockedBy: []string{"AMBA-10", "AMBA-11"}},
+			"AMBA-10": {Status: SubIssueStatusPending, BlockedBy: nil},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
+			"AMBA-12": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10", "AMBA-11"}},
 		},
 	}
 	ready := dg.Ready()
@@ -243,9 +243,9 @@ func TestReadyToDispatchWithDeps(t *testing.T) {
 func TestReadyToDispatchDepsResolved(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "done"},
-			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
-			"AMBA-12": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
+			"AMBA-10": {Status: SubIssueStatusDone},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
+			"AMBA-12": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
 		},
 	}
 	ready := dg.Ready()
@@ -257,8 +257,8 @@ func TestReadyToDispatchDepsResolved(t *testing.T) {
 func TestReadyToDispatchSkippedUnblocks(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "skipped"},
-			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
+			"AMBA-10": {Status: SubIssueStatusSkipped},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
 		},
 	}
 	ready := dg.Ready()
@@ -270,8 +270,8 @@ func TestReadyToDispatchSkippedUnblocks(t *testing.T) {
 func TestReadyToDispatchAlreadyDispatched(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "dispatched"},
-			"AMBA-11": {Status: "done"},
+			"AMBA-10": {Status: SubIssueStatusDispatched},
+			"AMBA-11": {Status: SubIssueStatusDone},
 		},
 	}
 	ready := dg.Ready()
@@ -283,8 +283,8 @@ func TestReadyToDispatchAlreadyDispatched(t *testing.T) {
 func TestReadyToDispatchFailedBlocksDownstream(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "failed"},
-			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
+			"AMBA-10": {Status: SubIssueStatusFailed},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
 		},
 	}
 	ready := dg.Ready()
@@ -296,14 +296,14 @@ func TestReadyToDispatchFailedBlocksDownstream(t *testing.T) {
 func TestIsGroupTerminal(t *testing.T) {
 	tests := []struct {
 		name     string
-		statuses []string
+		statuses []SubIssueStatus
 		want     bool
 	}{
-		{"all done", []string{"done", "done"}, true},
-		{"all skipped", []string{"skipped", "skipped"}, true},
-		{"mixed terminal", []string{"done", "failed", "skipped"}, true},
-		{"has pending", []string{"done", "pending"}, false},
-		{"has dispatched", []string{"done", "dispatched"}, false},
+		{"all done", []SubIssueStatus{SubIssueStatusDone, SubIssueStatusDone}, true},
+		{"all skipped", []SubIssueStatus{SubIssueStatusSkipped, SubIssueStatusSkipped}, true},
+		{"mixed terminal", []SubIssueStatus{SubIssueStatusDone, SubIssueStatusFailed, SubIssueStatusSkipped}, true},
+		{"has pending", []SubIssueStatus{SubIssueStatusDone, SubIssueStatusPending}, false},
+		{"has dispatched", []SubIssueStatus{SubIssueStatusDone, SubIssueStatusDispatched}, false},
 		{"empty", nil, true},
 	}
 	for _, tt := range tests {
@@ -322,12 +322,12 @@ func TestIsGroupTerminal(t *testing.T) {
 func TestCountGroupStatuses(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-1": {Status: "done"},
-			"AMBA-2": {Status: "done"},
-			"AMBA-3": {Status: "failed"},
-			"AMBA-4": {Status: "skipped"},
-			"AMBA-5": {Status: "skipped"},
-			"AMBA-6": {Status: "skipped"},
+			"AMBA-1": {Status: SubIssueStatusDone},
+			"AMBA-2": {Status: SubIssueStatusDone},
+			"AMBA-3": {Status: SubIssueStatusFailed},
+			"AMBA-4": {Status: SubIssueStatusSkipped},
+			"AMBA-5": {Status: SubIssueStatusSkipped},
+			"AMBA-6": {Status: SubIssueStatusSkipped},
 		},
 	}
 	done, failed, skipped := dg.CountStatuses()
@@ -351,37 +351,37 @@ func TestMaxWaveSize(t *testing.T) {
 		{
 			name: "all independent",
 			dg: &DispatchGroup{SubIssues: map[string]*SubIssueState{
-				"A": {Status: "pending"},
-				"B": {Status: "pending"},
-				"C": {Status: "pending"},
+				"A": {Status: SubIssueStatusPending},
+				"B": {Status: SubIssueStatusPending},
+				"C": {Status: SubIssueStatusPending},
 			}},
 			want: 3,
 		},
 		{
 			name: "linear chain",
 			dg: &DispatchGroup{SubIssues: map[string]*SubIssueState{
-				"A": {Status: "pending"},
-				"B": {Status: "pending", BlockedBy: []string{"A"}},
-				"C": {Status: "pending", BlockedBy: []string{"B"}},
+				"A": {Status: SubIssueStatusPending},
+				"B": {Status: SubIssueStatusPending, BlockedBy: []string{"A"}},
+				"C": {Status: SubIssueStatusPending, BlockedBy: []string{"B"}},
 			}},
 			want: 1,
 		},
 		{
 			name: "diamond",
 			dg: &DispatchGroup{SubIssues: map[string]*SubIssueState{
-				"A": {Status: "pending"},
-				"B": {Status: "pending", BlockedBy: []string{"A"}},
-				"C": {Status: "pending", BlockedBy: []string{"A"}},
-				"D": {Status: "pending", BlockedBy: []string{"B", "C"}},
+				"A": {Status: SubIssueStatusPending},
+				"B": {Status: SubIssueStatusPending, BlockedBy: []string{"A"}},
+				"C": {Status: SubIssueStatusPending, BlockedBy: []string{"A"}},
+				"D": {Status: SubIssueStatusPending, BlockedBy: []string{"B", "C"}},
 			}},
 			want: 2,
 		},
 		{
 			name: "skipped nodes excluded",
 			dg: &DispatchGroup{SubIssues: map[string]*SubIssueState{
-				"A": {Status: "skipped"},
-				"B": {Status: "pending", BlockedBy: []string{"A"}},
-				"C": {Status: "pending", BlockedBy: []string{"A"}},
+				"A": {Status: SubIssueStatusSkipped},
+				"B": {Status: SubIssueStatusPending, BlockedBy: []string{"A"}},
+				"C": {Status: SubIssueStatusPending, BlockedBy: []string{"A"}},
 			}},
 			want: 2,
 		},
@@ -406,10 +406,10 @@ func TestBaseBranchesForIssue(t *testing.T) {
 	branch2 := "adam/amba-11-api"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "done", Branch: &branch1},
-			"AMBA-11": {Status: "done", Branch: &branch2},
-			"AMBA-12": {Status: "pending", BlockedBy: []string{"AMBA-10", "AMBA-11"}},
-			"AMBA-13": {Status: "pending"},
+			"AMBA-10": {Status: SubIssueStatusDone, Branch: &branch1},
+			"AMBA-11": {Status: SubIssueStatusDone, Branch: &branch2},
+			"AMBA-12": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10", "AMBA-11"}},
+			"AMBA-13": {Status: SubIssueStatusPending},
 		},
 	}
 
@@ -432,7 +432,7 @@ func TestBaseBranchesForIssue(t *testing.T) {
 func TestBuildDepContextNoDeps(t *testing.T) {
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "pending"},
+			"AMBA-10": {Status: SubIssueStatusPending},
 		},
 	}
 	ctx := dg.DepContextFor("AMBA-10")
@@ -445,8 +445,8 @@ func TestBuildDepContextAllMain(t *testing.T) {
 	main := "main"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "done", Branch: &main},
-			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
+			"AMBA-10": {Status: SubIssueStatusDone, Branch: &main},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
 		},
 	}
 	ctx := dg.DepContextFor("AMBA-11")
@@ -459,8 +459,8 @@ func TestBuildDepContextWithBranch(t *testing.T) {
 	branch := "adam/amba-10-auth"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "done", Branch: &branch, Title: "Add auth"},
-			"AMBA-11": {Status: "pending", BlockedBy: []string{"AMBA-10"}},
+			"AMBA-10": {Status: SubIssueStatusDone, Branch: &branch, Title: "Add auth"},
+			"AMBA-11": {Status: SubIssueStatusPending, BlockedBy: []string{"AMBA-10"}},
 		},
 	}
 	ctx := dg.DepContextFor("AMBA-11")
@@ -491,13 +491,13 @@ func TestSyncGroupFromWorkersCompleted(t *testing.T) {
 	poolDir, r := setupPoolDir(t)
 
 	branch := "adam/amba-10-auth"
-	ws := &WorkerState{Status: "done", BranchName: &branch}
+	ws := &WorkerState{Status: WorkerStatusDone, BranchName: &branch}
 	saveWorkerState(filepath.Join(poolDir, "worker-1.json"), ws)
 
 	worker := "worker-1"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "dispatched", Worker: &worker, Title: "Auth"},
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth"},
 		},
 	}
 
@@ -505,7 +505,7 @@ func TestSyncGroupFromWorkersCompleted(t *testing.T) {
 	if !changed {
 		t.Error("expected changed = true")
 	}
-	if dg.SubIssues["AMBA-10"].Status != "done" {
+	if dg.SubIssues["AMBA-10"].Status != SubIssueStatusDone {
 		t.Errorf("status = %q, want done", dg.SubIssues["AMBA-10"].Status)
 	}
 	if dg.SubIssues["AMBA-10"].Branch == nil || *dg.SubIssues["AMBA-10"].Branch != branch {
@@ -520,13 +520,13 @@ func TestSyncGroupFromWorkersFirstFailureRetries(t *testing.T) {
 	poolDir, r := setupPoolDir(t)
 
 	errMsg := "build failed"
-	ws := &WorkerState{Status: "failed", Error: &errMsg}
+	ws := &WorkerState{Status: WorkerStatusFailed, Error: &errMsg}
 	saveWorkerState(filepath.Join(poolDir, "worker-1.json"), ws)
 
 	worker := "worker-1"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "dispatched", Worker: &worker, Title: "Auth", Retries: 0},
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth", Retries: 0},
 		},
 	}
 
@@ -535,7 +535,7 @@ func TestSyncGroupFromWorkersFirstFailureRetries(t *testing.T) {
 		t.Error("expected changed = true")
 	}
 	si := dg.SubIssues["AMBA-10"]
-	if si.Status != "pending" {
+	if si.Status != SubIssueStatusPending {
 		t.Errorf("status = %q, want pending (auto-retry)", si.Status)
 	}
 	if si.Worker != nil {
@@ -553,13 +553,13 @@ func TestSyncGroupFromWorkersSecondFailurePermanent(t *testing.T) {
 	poolDir, r := setupPoolDir(t)
 
 	errMsg := "build failed again"
-	ws := &WorkerState{Status: "failed", Error: &errMsg}
+	ws := &WorkerState{Status: WorkerStatusFailed, Error: &errMsg}
 	saveWorkerState(filepath.Join(poolDir, "worker-1.json"), ws)
 
 	worker := "worker-1"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "dispatched", Worker: &worker, Title: "Auth", Retries: 1},
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker, Title: "Auth", Retries: 1},
 		},
 	}
 
@@ -568,7 +568,7 @@ func TestSyncGroupFromWorkersSecondFailurePermanent(t *testing.T) {
 		t.Error("expected changed = true")
 	}
 	si := dg.SubIssues["AMBA-10"]
-	if si.Status != "failed" {
+	if si.Status != SubIssueStatusFailed {
 		t.Errorf("status = %q, want failed (no more retries)", si.Status)
 	}
 	if si.CompletedAt == nil {
@@ -580,13 +580,13 @@ func TestSyncGroupFromWorkersStillBusy(t *testing.T) {
 	poolDir, r := setupPoolDir(t)
 
 	pid := os.Getpid()
-	ws := &WorkerState{Status: "busy", PID: &pid}
+	ws := &WorkerState{Status: WorkerStatusBusy, PID: &pid}
 	saveWorkerState(filepath.Join(poolDir, "worker-1.json"), ws)
 
 	worker := "worker-1"
 	dg := &DispatchGroup{
 		SubIssues: map[string]*SubIssueState{
-			"AMBA-10": {Status: "dispatched", Worker: &worker},
+			"AMBA-10": {Status: SubIssueStatusDispatched, Worker: &worker},
 		},
 	}
 
@@ -594,7 +594,7 @@ func TestSyncGroupFromWorkersStillBusy(t *testing.T) {
 	if changed {
 		t.Error("expected changed = false for still-busy worker")
 	}
-	if dg.SubIssues["AMBA-10"].Status != "dispatched" {
+	if dg.SubIssues["AMBA-10"].Status != SubIssueStatusDispatched {
 		t.Errorf("status = %q, want dispatched", dg.SubIssues["AMBA-10"].Status)
 	}
 }
@@ -612,7 +612,7 @@ func TestDispatchGroupRoundTrip(t *testing.T) {
 		SubIssues: map[string]*SubIssueState{
 			"AMBA-10": {
 				Title:     "Auth module",
-				Status:    "done",
+				Status:    SubIssueStatusDone,
 				BlockedBy: nil,
 				Worker:    &worker,
 				Branch:    &branch,

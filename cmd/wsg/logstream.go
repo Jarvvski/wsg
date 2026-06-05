@@ -295,7 +295,7 @@ func summarizeInput(input any) string {
 // ── Log file queries ──────────────────────────────────────────────
 
 type logResult struct {
-	Status   string
+	Status   WorkerStatus
 	ExitCode *int
 	Error    *string
 }
@@ -318,14 +318,14 @@ func readLogResult(logFile string) *logResult {
 	}
 	if ev.Subtype == "success" && !ev.IsError {
 		ec := 0
-		return &logResult{Status: "done", ExitCode: &ec}
+		return &logResult{Status: WorkerStatusDone, ExitCode: &ec}
 	}
 	ec := 1
 	errMsg := ev.Result
 	if errMsg == "" {
 		errMsg = ev.Subtype
 	}
-	return &logResult{Status: "failed", ExitCode: &ec, Error: &errMsg}
+	return &logResult{Status: WorkerStatusFailed, ExitCode: &ec, Error: &errMsg}
 }
 
 func readLastActivity(logFile string) string {

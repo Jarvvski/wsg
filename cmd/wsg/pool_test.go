@@ -15,7 +15,7 @@ func TestMarkDispatched(t *testing.T) {
 	ws := newIdleWorkerState()
 	ws.MarkDispatched("AMBA-42", "/tmp/worker-1.log", "amba-42")
 
-	if ws.Status != "busy" {
+	if ws.Status != WorkerStatusBusy {
 		t.Errorf("status = %q, want busy", ws.Status)
 	}
 	if ws.Ticket == nil || *ws.Ticket != "AMBA-42" {
@@ -48,14 +48,14 @@ func TestMarkResumed(t *testing.T) {
 	ticket := "AMBA-42"
 	branch := "adam/amba-42-fix-login"
 	ws := &WorkerState{
-		Status:     "done",
+		Status:     WorkerStatusDone,
 		Ticket:     &ticket,
 		BranchName: &branch,
 	}
 
 	ws.MarkResumed("/tmp/worker-1.log")
 
-	if ws.Status != "busy" {
+	if ws.Status != WorkerStatusBusy {
 		t.Errorf("status = %q, want busy", ws.Status)
 	}
 	if ws.Ticket == nil || *ws.Ticket != "AMBA-42" {
@@ -87,7 +87,7 @@ func TestMarkDone(t *testing.T) {
 
 	ws.MarkDone(0)
 
-	if ws.Status != "done" {
+	if ws.Status != WorkerStatusDone {
 		t.Errorf("status = %q, want done", ws.Status)
 	}
 	if ws.CompletedAt == nil || *ws.CompletedAt == "" {
@@ -107,7 +107,7 @@ func TestMarkFailed(t *testing.T) {
 
 	ws.MarkFailed(1, "process crashed")
 
-	if ws.Status != "failed" {
+	if ws.Status != WorkerStatusFailed {
 		t.Errorf("status = %q, want failed", ws.Status)
 	}
 	if ws.CompletedAt == nil || *ws.CompletedAt == "" {
@@ -143,7 +143,7 @@ func TestReset(t *testing.T) {
 
 	ws.Reset()
 
-	if ws.Status != "idle" {
+	if ws.Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", ws.Status)
 	}
 	if ws.Ticket != nil {
@@ -204,7 +204,7 @@ func TestMarkDispatchedJSONRoundTrip(t *testing.T) {
 	}
 
 	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "busy" {
+	if loaded.Status != WorkerStatusBusy {
 		t.Errorf("loaded status = %q, want busy", loaded.Status)
 	}
 	if loaded.PID == nil || *loaded.PID != 9999 {
@@ -269,7 +269,7 @@ func TestWorkerStateJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.Status != "idle" {
+	if loaded.Status != WorkerStatusIdle {
 		t.Errorf("loaded status = %q, want idle", loaded.Status)
 	}
 	if loaded.Ticket != nil {
@@ -285,7 +285,7 @@ func TestWorkerStateBusyRoundTrip(t *testing.T) {
 	branch := "amba-42"
 
 	ws := &WorkerState{
-		Status:    "busy",
+		Status:    WorkerStatusBusy,
 		Ticket:    &ticket,
 		PID:       &pid,
 		StartedAt: &startedAt,
@@ -301,7 +301,7 @@ func TestWorkerStateBusyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.Status != "busy" {
+	if loaded.Status != WorkerStatusBusy {
 		t.Errorf("status = %q, want busy", loaded.Status)
 	}
 	if loaded.Ticket == nil || *loaded.Ticket != "AMBA-42" {
@@ -416,7 +416,7 @@ func TestOpenWorkerLoadsState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWorker: %v", err)
 	}
-	if h.Status().Status != "busy" {
+	if h.Status().Status != WorkerStatusBusy {
 		t.Errorf("status = %q, want busy", h.Status().Status)
 	}
 	if h.Status().Ticket == nil || *h.Status().Ticket != "AMBA-42" {
@@ -450,12 +450,12 @@ func TestLoadLiveWorkerReconcilesDeadBusyWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.Status().Status != "done" {
+	if h.Status().Status != WorkerStatusDone {
 		t.Errorf("status = %q, want done (reconciled from dead PID)", h.Status().Status)
 	}
 
 	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "done" {
+	if loaded.Status != WorkerStatusDone {
 		t.Errorf("persisted status = %q, want done", loaded.Status)
 	}
 }
@@ -473,7 +473,7 @@ func TestLoadLiveWorkerLeavesIdleAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.Status().Status != "idle" {
+	if h.Status().Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
 }
@@ -496,7 +496,7 @@ func TestCreateIdleWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIdleWorker: %v", err)
 	}
-	if h.Status().Status != "idle" {
+	if h.Status().Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
 
@@ -505,7 +505,7 @@ func TestCreateIdleWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load after create: %v", err)
 	}
-	if loaded.Status != "idle" {
+	if loaded.Status != WorkerStatusIdle {
 		t.Errorf("persisted status = %q, want idle", loaded.Status)
 	}
 }
@@ -558,7 +558,7 @@ func TestReclaimKillsLivePIDAndResets(t *testing.T) {
 		t.Errorf("process %d still alive after Reclaim", pid)
 	}
 
-	if h.Status().Status != "idle" {
+	if h.Status().Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
 	if h.Status().PID != nil {
@@ -572,7 +572,7 @@ func TestReclaimKillsLivePIDAndResets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.Status != "idle" {
+	if loaded.Status != WorkerStatusIdle {
 		t.Errorf("persisted status = %q, want idle", loaded.Status)
 	}
 }
@@ -602,7 +602,7 @@ func TestReclaimNoPIDResetsCleanly(t *testing.T) {
 		t.Fatalf("Reclaim: %v", err)
 	}
 
-	if h.Status().Status != "idle" {
+	if h.Status().Status != WorkerStatusIdle {
 		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
 	if h.Status().Error != nil {
@@ -664,9 +664,9 @@ func TestPoolSnapshotCountsByStatus(t *testing.T) {
 	ticket := "AMBA-42"
 	r := setupPoolWithStates(t, map[string]*WorkerState{
 		"worker-1": newIdleWorkerState(),
-		"worker-2": {Status: "busy", Ticket: &ticket},
-		"worker-3": {Status: "done"},
-		"worker-4": {Status: "failed"},
+		"worker-2": {Status: WorkerStatusBusy, Ticket: &ticket},
+		"worker-3": {Status: WorkerStatusDone},
+		"worker-4": {Status: WorkerStatusFailed},
 	})
 
 	p, err := OpenPool(r)
@@ -697,7 +697,7 @@ func TestPoolClaimMarksWorkerBusyWithTicket(t *testing.T) {
 	}
 
 	ws, _ := loadWorkerState(r.workerStateFile("worker-1"))
-	if ws.Status != "busy" {
+	if ws.Status != WorkerStatusBusy {
 		t.Errorf("status = %q, want busy", ws.Status)
 	}
 	if ws.Ticket == nil || *ws.Ticket != "AMBA-99" {
@@ -708,7 +708,7 @@ func TestPoolClaimMarksWorkerBusyWithTicket(t *testing.T) {
 func TestPoolClaimNoIdleErrors(t *testing.T) {
 	ticket := "AMBA-1"
 	r := setupPoolWithStates(t, map[string]*WorkerState{
-		"worker-1": {Status: "busy", Ticket: &ticket},
+		"worker-1": {Status: WorkerStatusBusy, Ticket: &ticket},
 	})
 	p, _ := OpenPool(r)
 	if _, err := p.Claim("AMBA-2"); err == nil {
@@ -743,7 +743,7 @@ func TestPoolRemoveDropsWorkerAndShrinksSize(t *testing.T) {
 func TestPoolRemoveBusyErrors(t *testing.T) {
 	ticket := "AMBA-1"
 	r := setupPoolWithStates(t, map[string]*WorkerState{
-		"worker-1": {Status: "busy", Ticket: &ticket},
+		"worker-1": {Status: WorkerStatusBusy, Ticket: &ticket},
 	})
 	p, _ := OpenPool(r)
 	if _, err := p.Remove("worker-1"); err == nil {
@@ -771,8 +771,8 @@ func TestPoolClaimSerialisesWithShrink(t *testing.T) {
 	const rounds = 50
 	for round := 0; round < rounds; round++ {
 		r := setupPoolWithStates(t, map[string]*WorkerState{
-			"worker-1": {Status: "busy", Ticket: &busyTicket},
-			"worker-2": {Status: "busy", Ticket: &busyTicket},
+			"worker-1": {Status: WorkerStatusBusy, Ticket: &busyTicket},
+			"worker-2": {Status: WorkerStatusBusy, Ticket: &busyTicket},
 			"worker-3": newIdleWorkerState(),
 			"worker-4": newIdleWorkerState(),
 		})
@@ -822,7 +822,7 @@ func TestPoolClaimSerialisesWithShrink(t *testing.T) {
 			if err != nil {
 				t.Fatalf("round %d: claimed worker state file gone: %v", round, err)
 			}
-			if ws.Status != "busy" || ws.Ticket == nil || *ws.Ticket != "AMBA-RACE" {
+			if ws.Status != WorkerStatusBusy || ws.Ticket == nil || *ws.Ticket != "AMBA-RACE" {
 				t.Errorf("round %d: claimed %q state = %+v, want busy AMBA-RACE", round, claimedWorker, ws)
 			}
 		}

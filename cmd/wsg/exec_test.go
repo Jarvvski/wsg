@@ -33,7 +33,7 @@ func TestRunClaudeFGSuccess(t *testing.T) {
 	logFile := filepath.Join(dir, "test.log")
 	h.runFG(dir, logFile, []string{"true"})
 
-	if h.Status().Status != "done" {
+	if h.Status().Status != WorkerStatusDone {
 		t.Errorf("status = %q, want done", h.Status().Status)
 	}
 	if h.Status().ExitCode == nil || *h.Status().ExitCode != 0 {
@@ -51,7 +51,7 @@ func TestRunClaudeFGFailure(t *testing.T) {
 	logFile := filepath.Join(dir, "test.log")
 	h.runFG(dir, logFile, []string{"false"})
 
-	if h.Status().Status != "failed" {
+	if h.Status().Status != WorkerStatusFailed {
 		t.Errorf("status = %q, want failed", h.Status().Status)
 	}
 	if h.Status().ExitCode == nil || *h.Status().ExitCode != 1 {
@@ -74,7 +74,7 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 	}
 
 	loaded := awaitTerminal(t, r.workerStateFile("worker-1"))
-	if loaded.Status != "done" {
+	if loaded.Status != WorkerStatusDone {
 		t.Errorf("status = %q, want done", loaded.Status)
 	}
 	if loaded.ExitCode == nil || *loaded.ExitCode != 0 {
@@ -96,7 +96,7 @@ func TestRunClaudeBGFailure(t *testing.T) {
 	}
 
 	loaded := awaitTerminal(t, r.workerStateFile("worker-1"))
-	if loaded.Status != "failed" {
+	if loaded.Status != WorkerStatusFailed {
 		t.Errorf("status = %q, want failed", loaded.Status)
 	}
 	if loaded.Error == nil || *loaded.Error != "error_during_execution" {
@@ -110,7 +110,7 @@ func awaitTerminal(t *testing.T, sf string) *WorkerState {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		loaded, _ := loadWorkerState(sf)
-		if loaded != nil && loaded.Status != "busy" {
+		if loaded != nil && loaded.Status != WorkerStatusBusy {
 			return loaded
 		}
 		time.Sleep(50 * time.Millisecond)

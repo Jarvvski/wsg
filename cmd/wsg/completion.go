@@ -46,7 +46,7 @@ func cmdListWorkspaces() {
 	}
 }
 
-func cmdListPoolWorkerStates(state string) {
+func cmdListPoolWorkerStates(state WorkerStatus) {
 	r, err := newRepoContext()
 	if err != nil {
 		return
@@ -61,7 +61,7 @@ func cmdListPoolWorkerStates(state string) {
 			continue
 		}
 		if state == "" || ws.Status == state {
-			desc := ws.Status
+			desc := string(ws.Status)
 			if ws.Ticket != nil {
 				desc += " " + *ws.Ticket
 			}
@@ -80,11 +80,11 @@ func cmdInternalComplete(args []string) {
 	case "workspaces":
 		cmdListWorkspaces()
 	case "idle-workers":
-		cmdListPoolWorkerStates("idle")
+		cmdListPoolWorkerStates(WorkerStatusIdle)
 	case "done-workers":
-		cmdListPoolWorkerStates("done")
+		cmdListPoolWorkerStates(WorkerStatusDone)
 	case "failed-workers":
-		cmdListPoolWorkerStates("failed")
+		cmdListPoolWorkerStates(WorkerStatusFailed)
 	case "non-busy-workers":
 		r, err := newRepoContext()
 		if err != nil {
@@ -99,8 +99,8 @@ func cmdInternalComplete(args []string) {
 			if err != nil {
 				continue
 			}
-			if ws.Status != "busy" {
-				desc := ws.Status
+			if !ws.Status.IsActive() {
+				desc := string(ws.Status)
 				if ws.Ticket != nil {
 					desc += " " + *ws.Ticket
 				}
