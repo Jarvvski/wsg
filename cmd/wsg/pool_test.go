@@ -830,3 +830,111 @@ func TestPoolClaimSerialisesWithShrink(t *testing.T) {
 		// outcome; we don't assert anything about its specific shape.
 	}
 }
+
+// TestWaitFinalSerialisesWithCheckLiveness is the regression test for the
+// supervisor-vs-checkLiveness race that WaitFinal fences with the worker
+// flock. Setup: a busy worker with a dead PID and a log file holding a
+// success result event. Many goroutines simultaneously LoadLiveWorker
+// (which calls checkLiveness -> finalizeUnderLock) alongside a direct
+// WaitFinal. Before the lock, the two writers could clobber each other's
+// temp file (path+".tmp") or land inconsistent terminal state. Under the
+// lock the first writer transitions busy -> done and saves; every later
+// writer re-reads under lock, sees done, and exits cleanly. The invariant:
+// the persisted state is done, with a single exit_code field still set.
+func TestWaitFinalSerialisesWithCheckLiveness(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	if err := os.MkdirAll(poolDir, 0755); err != nil {
+		t.Fatalf("mkdir pool: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	logFile := filepath.Join(poolDir, "worker-1.log")
+	if err := os.WriteFile(logFile,
+		[]byte(`{"type":"result","subtype":"success","is_error":false}`+"\n"),
+		0644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", logFile, "amba-42")
+	ws.SetPID(99999999) // dead PID: kernel reports !alive immediately
+	if err := saveWorkerState(r.workerStateFile("worker-1"), ws); err != nil {
+		t.Fatalf("save worker: %v", err)
+	}
+
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N + 1)
+	go func() {
+		defer wg.Done()
+		h, err := loadWorker(r, "worker-1")
+		if err != nil {
+			t.Errorf("loadWorker: %v", err)
+			return
+		}
+		h.WaitFinal()
+	}()
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := LoadLiveWorker(r, "worker-1"); err != nil {
+				t.Errorf("LoadLiveWorker: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	loaded, err := loadWorkerState(r.workerStateFile("worker-1"))
+	if err != nil {
+		t.Fatalf("load after race: %v", err)
+	}
+	if loaded.Status != WorkerStatusDone {
+		t.Errorf("status = %q, want done", loaded.Status)
+	}
+	if loaded.ExitCode == nil || *loaded.ExitCode != 0 {
+		t.Errorf("exit_code = %v, want 0", loaded.ExitCode)
+	}
+	if loaded.CompletedAt == nil || *loaded.CompletedAt == "" {
+		t.Error("completed_at should be set")
+	}
+}
+
+// TestWaitFinalIdempotent confirms WaitFinal can be called repeatedly on a
+// terminal worker without re-writing it - the re-read under lock observes
+// the terminal status and exits, so the persisted completed_at timestamp
+// remains stable across calls.
+func TestWaitFinalIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	if err := os.MkdirAll(poolDir, 0755); err != nil {
+		t.Fatalf("mkdir pool: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	logFile := filepath.Join(poolDir, "worker-1.log")
+	os.WriteFile(logFile,
+		[]byte(`{"type":"result","subtype":"success","is_error":false}`+"\n"),
+		0644)
+
+	ws := newIdleWorkerState()
+	ws.MarkDispatched("AMBA-42", logFile, "amba-42")
+	ws.SetPID(99999999)
+	saveWorkerState(r.workerStateFile("worker-1"), ws)
+
+	h1, _ := loadWorker(r, "worker-1")
+	h1.WaitFinal()
+	firstCompleted := h1.Status().CompletedAt
+	if firstCompleted == nil {
+		t.Fatal("first WaitFinal should populate completed_at")
+	}
+
+	h2, _ := loadWorker(r, "worker-1")
+	h2.WaitFinal()
+	if h2.Status().Status != WorkerStatusDone {
+		t.Errorf("second WaitFinal status = %q, want done", h2.Status().Status)
+	}
+	if h2.Status().CompletedAt == nil || *h2.Status().CompletedAt != *firstCompleted {
+		t.Errorf("completed_at changed across calls: %v -> %v", firstCompleted, h2.Status().CompletedAt)
+	}
+}

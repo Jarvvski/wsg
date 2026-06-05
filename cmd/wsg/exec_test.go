@@ -26,12 +26,17 @@ func setupBusyHandle(t *testing.T, dir, worker, logFile string) (*WorkerHandle, 
 	return h, r
 }
 
+// Foreground runs now finalise from the log (the single WaitFinal path
+// shared with background runs and checkLiveness), so the test command
+// emits a stream-json result event the way claude does in production.
+
 func TestRunClaudeFGSuccess(t *testing.T) {
 	dir := t.TempDir()
-	h, _ := setupBusyHandle(t, dir, "worker-1", filepath.Join(dir, ".jj", "pool", "worker-1.log"))
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, _ := setupBusyHandle(t, dir, "worker-1", logFile)
 
-	logFile := filepath.Join(dir, "test.log")
-	h.runFG(dir, logFile, []string{"true"})
+	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"success","is_error":false}'`}
+	h.runFG(dir, logFile, cmd)
 
 	if h.Status().Status != WorkerStatusDone {
 		t.Errorf("status = %q, want done", h.Status().Status)
@@ -46,16 +51,20 @@ func TestRunClaudeFGSuccess(t *testing.T) {
 
 func TestRunClaudeFGFailure(t *testing.T) {
 	dir := t.TempDir()
-	h, _ := setupBusyHandle(t, dir, "worker-1", filepath.Join(dir, ".jj", "pool", "worker-1.log"))
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, _ := setupBusyHandle(t, dir, "worker-1", logFile)
 
-	logFile := filepath.Join(dir, "test.log")
-	h.runFG(dir, logFile, []string{"false"})
+	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"error_during_execution","is_error":true}'`}
+	h.runFG(dir, logFile, cmd)
 
 	if h.Status().Status != WorkerStatusFailed {
 		t.Errorf("status = %q, want failed", h.Status().Status)
 	}
 	if h.Status().ExitCode == nil || *h.Status().ExitCode != 1 {
 		t.Errorf("exitCode = %v, want 1", h.Status().ExitCode)
+	}
+	if h.Status().Error == nil || *h.Status().Error != "error_during_execution" {
+		t.Errorf("error = %v, want error_during_execution", h.Status().Error)
 	}
 }
 
