@@ -332,10 +332,6 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "Worker is busy"
 			return m, nil
 		}
-		if w.state.LogFile == nil || *w.state.LogFile == "" {
-			m.status = "No session to resume"
-			return m, nil
-		}
 		m.view = viewInput
 		m.inputWorker = w.name
 		ta := textarea.New()
