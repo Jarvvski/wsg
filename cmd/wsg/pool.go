@@ -583,19 +583,16 @@ func (p *Pool) grow(newSize int) error {
 	var wg sync.WaitGroup
 	for i := 0; i < newSize-oldSize; i++ {
 		name := generateWorkerName()
-		wspath := r.workerDir(name)
-		if err := jjAddWorkspace(r.Root, wspath, ""); err != nil {
+		wait, err := Provision(r, name, "", WorkerRole)
+		if err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
 		}
 		p.cfg.Workers = append(p.cfg.Workers, name)
-		cacheAddEntry(r.cacheFile(), name, wspath)
 		wg.Add(1)
-		go func(name, wspath string) {
+		go func() {
 			defer wg.Done()
-			copyEnvFile(r.Root, wspath)
-			copySynapseClone(r.Root, wspath)
-			CreateIdleWorker(r, name)
-		}(name, wspath)
+			wait()
+		}()
 		info("  Created %s", name)
 	}
 	wg.Wait()
@@ -725,15 +722,7 @@ func (p *Pool) Destroy() error {
 // Internal; caller must hold the lock and have verified the worker is
 // safe to remove.
 func (p *Pool) tearDownWorker(worker string) {
-	r := p.repo
-	wspath := r.workerDir(worker)
-	jjForgetWorkspace(r.Root, worker)
-	cacheRemoveEntry(r.cacheFile(), worker)
-	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-		os.RemoveAll(wspath)
-	}
-	os.Remove(filepath.Join(r.poolDir(), worker+".json"))
-	os.Remove(filepath.Join(r.poolDir(), worker+".log"))
+	Teardown(p.repo, worker)
 }
 
 func ghRepo(r *RepoContext) string {

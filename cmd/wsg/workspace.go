@@ -53,7 +53,7 @@ func cmdAdd(args []string) {
 		return
 	}
 
-	wspath := filepath.Join(r.BaseDir, name)
+	wspath := r.workerDir(name)
 
 	entries, err := cacheGet(r)
 	if err != nil {
@@ -64,17 +64,70 @@ func cmdAdd(args []string) {
 		return
 	}
 
-	os.MkdirAll(r.BaseDir, 0755)
-
-	if err := jjAddWorkspace(r.Root, wspath, *revision); err != nil {
+	wait, err := Provision(r, name, *revision, AdHocRole)
+	if err != nil {
 		fatal("jj workspace add: %v", err)
 	}
-
-	copyEnvFile(r.Root, wspath)
-	copySynapseClone(r.Root, wspath)
-
-	cacheAddEntry(r.cacheFile(), name, wspath)
+	wait()
 	fmt.Println(wspath)
+}
+
+// ProvisionRole distinguishes a one-shot `wsg add` workspace from a pool
+// worker. WorkerRole additionally writes the idle worker state file so the
+// pool can dispatch into the new slot.
+type ProvisionRole int
+
+const (
+	AdHocRole ProvisionRole = iota
+	WorkerRole
+)
+
+// Provision creates a jj workspace at r.workerDir(name) on revision (empty
+// means head) and registers it in the cache - both synchronously. The
+// slower copy steps (.env, the synapse clone, plus the idle worker state
+// file for WorkerRole) run in a background goroutine; the returned wait
+// function blocks until they complete.
+//
+// Pool.grow drives multiple workers' finalisation in parallel by collecting
+// wait funcs onto a sync.WaitGroup. cmdAdd calls wait() before printing the
+// path so the user can cd into a fully-set-up workspace.
+func Provision(r *RepoContext, name, revision string, role ProvisionRole) (func(), error) {
+	wspath := r.workerDir(name)
+	if err := os.MkdirAll(r.BaseDir, 0755); err != nil {
+		return nil, err
+	}
+	if err := jjAddWorkspace(r.Root, wspath, revision); err != nil {
+		return nil, err
+	}
+	cacheAddEntry(r.cacheFile(), name, wspath)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		copyEnvFile(r.Root, wspath)
+		copySynapseClone(r.Root, wspath)
+		if role == WorkerRole {
+			CreateIdleWorker(r, name)
+		}
+	}()
+	return func() { <-done }, nil
+}
+
+// Teardown reverses Provision: forgets the jj workspace, drops the cache
+// entry, removes the workspace directory, and best-effort deletes the
+// worker state and log files (no-op when absent, so safe for AdHocRole
+// workspaces too). Any external clean-up step - e.g. cmdRm's
+// `mise run :dev -- murder` - is the caller's responsibility and must
+// happen before this is called.
+func Teardown(r *RepoContext, name string) error {
+	wspath := r.workerDir(name)
+	jjForgetWorkspace(r.Root, name)
+	cacheRemoveEntry(r.cacheFile(), name)
+	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
+		os.RemoveAll(wspath)
+	}
+	os.Remove(r.workerStateFile(name))
+	os.Remove(filepath.Join(r.poolDir(), name+".log"))
+	return nil
 }
 
 func copyEnvFile(root, wspath string) {
@@ -131,7 +184,7 @@ func cmdRm(args []string) {
 			info("Cannot remove default workspace")
 			continue
 		}
-		wspath := filepath.Join(r.BaseDir, name)
+		wspath := r.workerDir(name)
 		if !force {
 			if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 				if output, err := run(wspath, "mise", "run", ":dev", "--", "murder"); err != nil {
@@ -140,10 +193,12 @@ func cmdRm(args []string) {
 				}
 			}
 		}
-		jjForgetWorkspace(r.Root, name)
-		cacheRemoveEntry(r.cacheFile(), name)
+		existed := false
 		if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-			os.RemoveAll(wspath)
+			existed = true
+		}
+		Teardown(r, name)
+		if existed {
 			info("Deleted %s", wspath)
 		}
 	}
