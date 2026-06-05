@@ -51,6 +51,18 @@ After modifying, always run `make install` and verify:
 - `wsg pool reset <worker>` - resets to idle
 - `wsg dispatch <TICKET> --fg` - launches claude agent in worker workspace
 
+## Landing a change
+
+One commit per focused fix/change. Once tests pass and `make install` runs clean, land it with:
+
+```bash
+jj describe -m "<imperative one-liner>"   # name the just-finished change
+jj new                                    # start a fresh working copy on top
+jj bookmark set main --to @-              # advance local main to the landed commit
+```
+
+The working copy is always a commit in jj, so "landing" means giving it a description and moving `main` forward. The new empty `@` is your next change. Don't pile unrelated work into one commit - if the next idea is different, it's a new `jj describe` + `jj new` cycle. Commit messages follow the style in `jj log` (short imperative: "Add X", "Fix Y", "Unify Z").
+
 ## Agent skills
 
 ### Issue tracker
