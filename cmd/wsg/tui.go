@@ -661,17 +661,10 @@ func ensurePoolCapacityForBatch(r *RepoContext, tickets []string) {
 func (m tuiModel) doFetchAll() tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		label := "ready-for-agent"
-		prompt := fmt.Sprintf(
-			"Use the Linear MCP list_issues tool to find issues with label '%s' that are in 'Todo' state for the Ameba team. Return ONLY the issue identifiers (e.g. AMBA-42) as a JSON array in this exact format: {\"tickets\": [\"AMBA-1\", \"AMBA-2\"]}",
-			label,
-		)
-		output, err := claudeQuery(repo.Root, prompt,
-			"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue")
+		tickets, err := linearReadyTickets(repo, "ready-for-agent")
 		if err != nil {
 			return fetchAllResultMsg{err: err}
 		}
-		tickets := parseTicketResponse(output)
 		return fetchAllResultMsg{tickets: tickets}
 	}
 }

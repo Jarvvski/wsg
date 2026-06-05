@@ -379,74 +379,27 @@ func (dg *DispatchGroup) PrintStatus() {
 func BuildDispatchGroup(r *RepoContext, parent string, opts *DispatchOpts) (*DispatchGroup, error) {
 	repo := ghRepo(r)
 
-	prompt := fmt.Sprintf(`Fetch the parent-child sub-issue graph for Linear issue %s.
-
-Steps:
-1. Call list_issues with parentId="%s" to enumerate the DIRECT CHILDREN of %s via the parent-child relationship.
-2. If step 1 returns zero issues, respond with exactly: {"sub_issues": {}} and stop. Do not call any other tools.
-3. Otherwise, for each child returned in step 1, call get_issue with includeRelations=true to read its blockedBy relations.
-4. Return ONLY a JSON object (no markdown, no explanation) in this format:
-
-{
-  "sub_issues": {
-    "AMBA-17": {
-      "title": "Short title from issue",
-      "status": "Backlog",
-      "blocked_by": [],
-      "cross_repo": false
-    },
-    "AMBA-18": {
-      "title": "Short title from issue",
-      "status": "In Progress",
-      "blocked_by": ["AMBA-17"],
-      "cross_repo": false
-    }
-  }
-}
-
-CRITICAL constraints (read carefully):
-- Only include issues whose parent is %s (i.e. issues returned by step 1's list_issues call).
-- Do NOT include %s itself in sub_issues.
-- Do NOT include issues from %s's own blocks / blockedBy / relatedTo relations. Those are siblings or cousins of %s, not its children. A common mistake is to call get_issue on %s and treat its "blocks" list as sub-issues - never do that.
-- blocked_by must contain ONLY sibling IDs that also appear as keys in sub_issues. Drop any blockedBy entry that is not a child of %s.
-- status is the exact Linear status name (e.g. "Backlog", "Todo", "Planned", "In Progress", "In Review", "Done").
-- cross_repo is true if the sub-issue targets a different codebase than %s (look for repo/service names in the title or description).
-- Include ALL children from step 1 even if they have no blockers.`, parent, parent, parent, parent, parent, parent, parent, parent, parent, repo)
-
 	info("Building dependency graph for %s...", parent)
 
-	output, err := claudeQuery(r.Root, prompt,
-		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue")
+	entries, err := linearSubIssueGraph(r, parent, repo)
 	if err != nil {
 		return nil, err
 	}
 
-	var graphResp struct {
-		SubIssues map[string]struct {
-			Title     string   `json:"title"`
-			Status    string   `json:"status"`
-			BlockedBy []string `json:"blocked_by"`
-			CrossRepo bool     `json:"cross_repo"`
-		} `json:"sub_issues"`
-	}
-	if err := json.Unmarshal([]byte(output), &graphResp); err != nil {
-		return nil, fmt.Errorf("failed to parse dependency graph: %v\nraw: %s", err, output)
-	}
-
-	if _, ok := graphResp.SubIssues[parent]; ok {
+	if _, ok := entries[parent]; ok {
 		info("  Dropping %s from sub-issues (parent cannot be its own child)", parent)
-		delete(graphResp.SubIssues, parent)
+		delete(entries, parent)
 	}
 
-	if len(graphResp.SubIssues) == 0 {
+	if len(entries) == 0 {
 		return nil, nil
 	}
 
-	siblingSet := make(map[string]bool, len(graphResp.SubIssues))
-	for id := range graphResp.SubIssues {
+	siblingSet := make(map[string]bool, len(entries))
+	for id := range entries {
 		siblingSet[id] = true
 	}
-	for id, si := range graphResp.SubIssues {
+	for id, si := range entries {
 		filtered := si.BlockedBy[:0]
 		for _, dep := range si.BlockedBy {
 			if siblingSet[dep] {
@@ -456,7 +409,7 @@ CRITICAL constraints (read carefully):
 			}
 		}
 		si.BlockedBy = filtered
-		graphResp.SubIssues[id] = si
+		entries[id] = si
 	}
 
 	dg := &DispatchGroup{
@@ -469,7 +422,7 @@ CRITICAL constraints (read carefully):
 		},
 	}
 
-	for id, si := range graphResp.SubIssues {
+	for id, si := range entries {
 		state := &SubIssueState{
 			Title:     si.Title,
 			Status:    "pending",

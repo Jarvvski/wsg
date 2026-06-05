@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -147,18 +146,11 @@ func dispatchAll(opts *DispatchOpts) {
 
 	info("Fetching tickets with label '%s'...", opts.Label)
 
-	prompt := fmt.Sprintf(
-		"Use the Linear MCP list_issues tool to find issues with label '%s' that are in 'Todo' state for the Ameba team. Return ONLY the issue identifiers (e.g. AMBA-42) as a JSON array in this exact format: {\"tickets\": [\"AMBA-1\", \"AMBA-2\"]}",
-		opts.Label,
-	)
-
-	output, err := claudeQuery(r.Root, prompt,
-		"mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue")
+	tickets, err := linearReadyTickets(r, opts.Label)
 	if err != nil {
 		fatal("Failed to fetch tickets: %v", err)
 	}
 
-	tickets := parseTicketResponse(output)
 	if len(tickets) == 0 {
 		info("No tickets found with label '%s'", opts.Label)
 		return
@@ -188,16 +180,6 @@ func dispatchAll(opts *DispatchOpts) {
 		count++
 	}
 	info("Dispatched %d ticket(s)", count)
-}
-
-func parseTicketResponse(output string) []string {
-	var payload struct {
-		Tickets []string `json:"tickets"`
-	}
-	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		return nil
-	}
-	return payload.Tickets
 }
 
 func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *DependencyContext) {
