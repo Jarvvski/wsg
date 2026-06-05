@@ -57,11 +57,13 @@ One commit per focused fix/change. Once tests pass and `make install` runs clean
 
 ```bash
 jj describe -m "<imperative one-liner>"   # name the just-finished change
-jj new                                    # start a fresh working copy on top
-jj bookmark set main --to @-              # advance local main to the landed commit
+jj bookmark set main --to @               # advance local main to that commit
+jj new                                    # ALWAYS follow main movement with a fresh empty @
 ```
 
-The working copy is always a commit in jj, so "landing" means giving it a description and moving `main` forward. The new empty `@` is your next change. Don't pile unrelated work into one commit - if the next idea is different, it's a new `jj describe` + `jj new` cycle. Commit messages follow the style in `jj log` (short imperative: "Add X", "Fix Y", "Unify Z").
+**Invariant:** every time `main` moves, the very next command is `jj new`. `@` must never *be* the main commit - it must sit one commit above main, empty, ready for the next change. This applies to any workflow that moves `main`, not just this one. If you find `@` on main, immediately `jj new` before editing anything.
+
+The working copy is always a commit in jj, so "landing" means giving it a description and moving `main` forward. Don't pile unrelated work into one commit - if the next idea is different, it's a new `jj describe` + `jj new` cycle. Commit messages follow the style in `jj log` (short imperative: "Add X", "Fix Y", "Unify Z").
 
 ## Agent skills
 
