@@ -24,7 +24,6 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 		return 0, fmt.Errorf("worker %s is busy", displayWorker(worker))
 	}
 
-	wspath := r.workerDir(worker)
 	logFile := filepath.Join(r.poolDir(), worker+".log")
 
 	sessionID := ""
@@ -44,12 +43,7 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 		inv.SystemPrompt = opts.SystemPrompt
 	}
 
-	fullArgs := append([]string{"claude"}, inv.Args()...)
-	if opts.Foreground {
-		h.RunFG(wspath, logFile, fullArgs)
-		return 0, nil
-	}
-	return h.RunBG(r, worker, wspath, logFile, fullArgs)
+	return h.Launch(r, worker, inv, opts.Foreground)
 }
 
 func cmdSend(args []string) {

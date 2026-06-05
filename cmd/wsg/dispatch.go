@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -212,8 +211,6 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 		}
 	}
 
-	poolDir := r.poolDir()
-	logFile := filepath.Join(poolDir, worker+".log")
 	repo := ghRepo(r)
 	ticketLower := strings.ToLower(opts.TicketID)
 
@@ -227,8 +224,7 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	}
 	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
 
-	sf := r.workerStateFile(worker)
-	h, err := OpenWorker(sf)
+	h, err := OpenWorker(r.workerStateFile(worker))
 	if err != nil {
 		fatal("Failed to open worker state: %v", err)
 	}
@@ -243,18 +239,14 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 		SystemPrompt: systemPrompt,
 		Prompt:       workerPrompt,
 	}
-	claudeArgs := inv.Args()
 
 	info("Dispatching %s to %s...", opts.TicketID, worker)
 
-	fullArgs := append([]string{"claude"}, claudeArgs...)
-	if opts.Foreground {
-		h.RunFG(wspath, logFile, fullArgs)
-	} else {
-		pid, err := h.RunBG(r, worker, wspath, logFile, fullArgs)
-		if err != nil {
-			fatal("Failed to start worker: %v", err)
-		}
+	pid, err := h.Launch(r, worker, inv, opts.Foreground)
+	if err != nil {
+		fatal("Failed to start worker: %v", err)
+	}
+	if !opts.Foreground {
 		info("  %s (PID %d) -> %s", worker, pid, opts.TicketID)
 	}
 }

@@ -285,6 +285,22 @@ func (h *WorkerHandle) finalizeFromLog(r *RepoContext, worker string) {
 	h.Failed(1, "Process exited unexpectedly")
 }
 
+// Launch spawns claude in the worker's workspace using inv. The handle must
+// already be in busy state (claimIdleWorker for dispatch, h.Resume for resume).
+// In foreground mode the process runs to completion and finalises the handle;
+// the returned pid is 0. In background mode the pid is returned and the handle
+// is finalised asynchronously when the process exits.
+func (h *WorkerHandle) Launch(r *RepoContext, worker string, inv claudeInvocation, fg bool) (int, error) {
+	wspath := r.workerDir(worker)
+	logFile := filepath.Join(r.poolDir(), worker+".log")
+	argv := append([]string{"claude"}, inv.Args()...)
+	if fg {
+		h.RunFG(wspath, logFile, argv)
+		return 0, nil
+	}
+	return h.RunBG(r, worker, wspath, logFile, argv)
+}
+
 func (h *WorkerHandle) RunFG(wspath, logFile string, claudeArgs []string) {
 	exitCode, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
 	if err != nil {
