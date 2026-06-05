@@ -99,9 +99,9 @@ func (m *tuiModel) loadWorkers() {
 	for _, name := range p.Config().Workers {
 		h, err := LoadLiveWorker(m.repo, name)
 		if err != nil {
-			h, _ = CreateIdleWorker(m.repo.workerStateFile(name))
+			h, _ = CreateIdleWorker(m.repo, name)
 		}
-		ws := h.State()
+		ws := h.Status()
 		activity := ""
 		if ws.LogFile != nil && *ws.LogFile != "" {
 			activity = readLastActivity(*ws.LogFile)
@@ -383,8 +383,8 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Dismissed %s (pool size: %d)", displayWorker(w.name), size)
 			return m, nil
 		}
-		if h, err := OpenWorker(m.repo.workerStateFile(w.name)); err == nil {
-			w.state = h.State()
+		if h, err := loadWorker(m.repo, w.name); err == nil {
+			w.state = h.Status()
 		}
 		w.lastActivity = ""
 		m.status = fmt.Sprintf("Reset %s to idle", displayWorker(w.name))

@@ -122,14 +122,16 @@ func TestCheckWorkerLivenessDeadProcessSuccessLog(t *testing.T) {
 	ws.SetPID(pid)
 	saveWorkerState(r.workerStateFile("worker-1"), ws)
 
-	h, _ := OpenWorker(r.workerStateFile("worker-1"))
-	h.CheckLiveness(r, "worker-1")
-
-	if h.State().Status != "done" {
-		t.Errorf("status = %q, want done", h.State().Status)
+	h, err := LoadLiveWorker(r, "worker-1")
+	if err != nil {
+		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.State().ExitCode == nil || *h.State().ExitCode != 0 {
-		t.Errorf("exitCode = %v, want 0", h.State().ExitCode)
+
+	if h.Status().Status != "done" {
+		t.Errorf("status = %q, want done", h.Status().Status)
+	}
+	if h.Status().ExitCode == nil || *h.Status().ExitCode != 0 {
+		t.Errorf("exitCode = %v, want 0", h.Status().ExitCode)
 	}
 }
 
@@ -148,14 +150,16 @@ func TestCheckWorkerLivenessDeadProcessFailLog(t *testing.T) {
 	ws.SetPID(pid)
 	saveWorkerState(r.workerStateFile("worker-1"), ws)
 
-	h, _ := OpenWorker(r.workerStateFile("worker-1"))
-	h.CheckLiveness(r, "worker-1")
-
-	if h.State().Status != "failed" {
-		t.Errorf("status = %q, want failed", h.State().Status)
+	h, err := LoadLiveWorker(r, "worker-1")
+	if err != nil {
+		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.State().Error == nil || *h.State().Error != "crashed" {
-		t.Errorf("error = %v, want 'crashed'", h.State().Error)
+
+	if h.Status().Status != "failed" {
+		t.Errorf("status = %q, want failed", h.Status().Status)
+	}
+	if h.Status().Error == nil || *h.Status().Error != "crashed" {
+		t.Errorf("error = %v, want 'crashed'", h.Status().Error)
 	}
 }
 
@@ -174,14 +178,16 @@ func TestCheckWorkerLivenessDeadProcessNoLog(t *testing.T) {
 	ws.SetPID(pid)
 	saveWorkerState(r.workerStateFile("worker-1"), ws)
 
-	h, _ := OpenWorker(r.workerStateFile("worker-1"))
-	h.CheckLiveness(r, "worker-1")
-
-	if h.State().Status != "failed" {
-		t.Errorf("status = %q, want failed (process exited unexpectedly)", h.State().Status)
+	h, err := LoadLiveWorker(r, "worker-1")
+	if err != nil {
+		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.State().Error == nil || *h.State().Error != "Process exited unexpectedly" {
-		t.Errorf("error = %v, want 'Process exited unexpectedly'", h.State().Error)
+
+	if h.Status().Status != "failed" {
+		t.Errorf("status = %q, want failed (process exited unexpectedly)", h.Status().Status)
+	}
+	if h.Status().Error == nil || *h.Status().Error != "Process exited unexpectedly" {
+		t.Errorf("error = %v, want 'Process exited unexpectedly'", h.Status().Error)
 	}
 }
 
@@ -194,11 +200,13 @@ func TestCheckWorkerLivenessIdleWorkerUnchanged(t *testing.T) {
 	ws := newIdleWorkerState()
 	saveWorkerState(r.workerStateFile("worker-1"), ws)
 
-	h, _ := OpenWorker(r.workerStateFile("worker-1"))
-	h.CheckLiveness(r, "worker-1")
+	h, err := LoadLiveWorker(r, "worker-1")
+	if err != nil {
+		t.Fatalf("LoadLiveWorker: %v", err)
+	}
 
-	if h.State().Status != "idle" {
-		t.Errorf("status = %q, want idle (should not change)", h.State().Status)
+	if h.Status().Status != "idle" {
+		t.Errorf("status = %q, want idle (should not change)", h.Status().Status)
 	}
 }
 

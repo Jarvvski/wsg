@@ -398,6 +398,11 @@ func TestElapsedDisplay(t *testing.T) {
 func strPtr(s string) *string { return &s }
 
 // ── WorkerHandle tests ────────────────────────────────────────────
+//
+// The state-mutation primitives are exercised by the WorkerState tests
+// above (TestMarkDispatched, TestMarkDone, TestMarkFailed, TestMarkResumed,
+// TestSetPID, TestReset). These handle-level tests focus on the four
+// public lifecycle verbs plus the constructors that wire them up.
 
 func TestOpenWorkerLoadsState(t *testing.T) {
 	dir := t.TempDir()
@@ -411,11 +416,11 @@ func TestOpenWorkerLoadsState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWorker: %v", err)
 	}
-	if h.State().Status != "busy" {
-		t.Errorf("status = %q, want busy", h.State().Status)
+	if h.Status().Status != "busy" {
+		t.Errorf("status = %q, want busy", h.Status().Status)
 	}
-	if h.State().Ticket == nil || *h.State().Ticket != "AMBA-42" {
-		t.Errorf("ticket = %v, want AMBA-42", h.State().Ticket)
+	if h.Status().Ticket == nil || *h.Status().Ticket != "AMBA-42" {
+		t.Errorf("ticket = %v, want AMBA-42", h.Status().Ticket)
 	}
 }
 
@@ -445,8 +450,8 @@ func TestLoadLiveWorkerReconcilesDeadBusyWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.State().Status != "done" {
-		t.Errorf("status = %q, want done (reconciled from dead PID)", h.State().Status)
+	if h.Status().Status != "done" {
+		t.Errorf("status = %q, want done (reconciled from dead PID)", h.Status().Status)
 	}
 
 	loaded, _ := loadWorkerState(path)
@@ -468,8 +473,8 @@ func TestLoadLiveWorkerLeavesIdleAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLiveWorker: %v", err)
 	}
-	if h.State().Status != "idle" {
-		t.Errorf("status = %q, want idle", h.State().Status)
+	if h.Status().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
 }
 
@@ -483,146 +488,25 @@ func TestLoadLiveWorkerMissingFile(t *testing.T) {
 
 func TestCreateIdleWorker(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	os.MkdirAll(poolDir, 0755)
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
 
-	h, err := CreateIdleWorker(path)
+	h, err := CreateIdleWorker(r, "worker-1")
 	if err != nil {
 		t.Fatalf("CreateIdleWorker: %v", err)
 	}
-	if h.State().Status != "idle" {
-		t.Errorf("status = %q, want idle", h.State().Status)
+	if h.Status().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
 
 	// Verify persisted to disk
-	loaded, err := loadWorkerState(path)
+	loaded, err := loadWorkerState(r.workerStateFile("worker-1"))
 	if err != nil {
 		t.Fatalf("load after create: %v", err)
 	}
 	if loaded.Status != "idle" {
 		t.Errorf("persisted status = %q, want idle", loaded.Status)
-	}
-}
-
-func TestHandleDispatch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
-
-	h, _ := CreateIdleWorker(path)
-	if err := h.Dispatch("AMBA-42", "/tmp/w.log", "amba-42"); err != nil {
-		t.Fatalf("Dispatch: %v", err)
-	}
-
-	if h.State().Status != "busy" {
-		t.Errorf("status = %q, want busy", h.State().Status)
-	}
-	if h.State().Ticket == nil || *h.State().Ticket != "AMBA-42" {
-		t.Errorf("ticket = %v, want AMBA-42", h.State().Ticket)
-	}
-
-	// Verify persisted
-	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "busy" {
-		t.Errorf("persisted status = %q, want busy", loaded.Status)
-	}
-	if loaded.Ticket == nil || *loaded.Ticket != "AMBA-42" {
-		t.Errorf("persisted ticket = %v, want AMBA-42", loaded.Ticket)
-	}
-}
-
-func TestHandleDone(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
-
-	h, _ := CreateIdleWorker(path)
-	h.Dispatch("AMBA-42", "/tmp/w.log", "amba-42")
-
-	if err := h.Done(0); err != nil {
-		t.Fatalf("Done: %v", err)
-	}
-
-	if h.State().Status != "done" {
-		t.Errorf("status = %q, want done", h.State().Status)
-	}
-	if h.State().ExitCode == nil || *h.State().ExitCode != 0 {
-		t.Errorf("exitCode = %v, want 0", h.State().ExitCode)
-	}
-
-	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "done" {
-		t.Errorf("persisted status = %q, want done", loaded.Status)
-	}
-}
-
-func TestHandleFailed(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
-
-	h, _ := CreateIdleWorker(path)
-	h.Dispatch("AMBA-42", "/tmp/w.log", "amba-42")
-
-	if err := h.Failed(1, "process crashed"); err != nil {
-		t.Fatalf("Failed: %v", err)
-	}
-
-	if h.State().Status != "failed" {
-		t.Errorf("status = %q, want failed", h.State().Status)
-	}
-	if h.State().Error == nil || *h.State().Error != "process crashed" {
-		t.Errorf("error = %v, want 'process crashed'", h.State().Error)
-	}
-
-	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "failed" {
-		t.Errorf("persisted status = %q, want failed", loaded.Status)
-	}
-}
-
-func TestHandleResume(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
-
-	h, _ := CreateIdleWorker(path)
-	h.Dispatch("AMBA-42", "/tmp/w.log", "amba-42")
-	h.Done(0)
-
-	if err := h.Resume("/tmp/w2.log"); err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-
-	if h.State().Status != "busy" {
-		t.Errorf("status = %q, want busy", h.State().Status)
-	}
-	if h.State().Ticket == nil || *h.State().Ticket != "AMBA-42" {
-		t.Error("ticket should be preserved after resume")
-	}
-	if h.State().LogFile == nil || *h.State().LogFile != "/tmp/w2.log" {
-		t.Errorf("logFile = %v, want /tmp/w2.log", h.State().LogFile)
-	}
-
-	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "busy" {
-		t.Errorf("persisted status = %q, want busy", loaded.Status)
-	}
-}
-
-func TestHandleSetPID(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
-
-	h, _ := CreateIdleWorker(path)
-	h.Dispatch("AMBA-42", "/tmp/w.log", "amba-42")
-
-	if err := h.SetPID(12345); err != nil {
-		t.Fatalf("SetPID: %v", err)
-	}
-
-	if h.State().PID == nil || *h.State().PID != 12345 {
-		t.Errorf("pid = %v, want 12345", h.State().PID)
-	}
-
-	loaded, _ := loadWorkerState(path)
-	if loaded.PID == nil || *loaded.PID != 12345 {
-		t.Errorf("persisted pid = %v, want 12345", loaded.PID)
 	}
 }
 
@@ -653,16 +537,16 @@ func TestReclaimKillsLivePIDAndResets(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	h, err := OpenWorker(path)
+	h, err := loadWorker(r, "worker-1")
 	if err != nil {
-		t.Fatalf("OpenWorker: %v", err)
+		t.Fatalf("loadWorker: %v", err)
 	}
 
 	if !processAlive(pid) {
 		t.Fatal("sleep should be alive before Reclaim")
 	}
 
-	if err := h.Reclaim(r, "worker-1"); err != nil {
+	if err := h.Reclaim(); err != nil {
 		t.Fatalf("Reclaim: %v", err)
 	}
 
@@ -674,14 +558,14 @@ func TestReclaimKillsLivePIDAndResets(t *testing.T) {
 		t.Errorf("process %d still alive after Reclaim", pid)
 	}
 
-	if h.State().Status != "idle" {
-		t.Errorf("status = %q, want idle", h.State().Status)
+	if h.Status().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
-	if h.State().PID != nil {
-		t.Errorf("PID = %v, want nil after reset", h.State().PID)
+	if h.Status().PID != nil {
+		t.Errorf("PID = %v, want nil after reset", h.Status().PID)
 	}
-	if h.State().Ticket != nil {
-		t.Errorf("ticket = %v, want nil after reset", h.State().Ticket)
+	if h.Status().Ticket != nil {
+		t.Errorf("ticket = %v, want nil after reset", h.Status().Ticket)
 	}
 
 	loaded, err := loadWorkerState(path)
@@ -709,45 +593,20 @@ func TestReclaimNoPIDResetsCleanly(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	h, err := OpenWorker(path)
+	h, err := loadWorker(r, "worker-1")
 	if err != nil {
-		t.Fatalf("OpenWorker: %v", err)
+		t.Fatalf("loadWorker: %v", err)
 	}
 
-	if err := h.Reclaim(r, "worker-1"); err != nil {
+	if err := h.Reclaim(); err != nil {
 		t.Fatalf("Reclaim: %v", err)
 	}
 
-	if h.State().Status != "idle" {
-		t.Errorf("status = %q, want idle", h.State().Status)
+	if h.Status().Status != "idle" {
+		t.Errorf("status = %q, want idle", h.Status().Status)
 	}
-	if h.State().Error != nil {
-		t.Errorf("error = %v, want nil after reset", h.State().Error)
-	}
-}
-
-func TestHandleReset(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "worker.json")
-
-	h, _ := CreateIdleWorker(path)
-	h.Dispatch("AMBA-42", "/tmp/w.log", "amba-42")
-	h.Done(0)
-
-	if err := h.Reset(); err != nil {
-		t.Fatalf("Reset: %v", err)
-	}
-
-	if h.State().Status != "idle" {
-		t.Errorf("status = %q, want idle", h.State().Status)
-	}
-	if h.State().Ticket != nil {
-		t.Error("ticket should be nil after reset")
-	}
-
-	loaded, _ := loadWorkerState(path)
-	if loaded.Status != "idle" {
-		t.Errorf("persisted status = %q, want idle", loaded.Status)
+	if h.Status().Error != nil {
+		t.Errorf("error = %v, want nil after reset", h.Status().Error)
 	}
 }
 

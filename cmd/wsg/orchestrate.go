@@ -255,7 +255,7 @@ func (dg *DispatchGroup) SyncFromWorkers(r *RepoContext) bool {
 		if err != nil {
 			continue
 		}
-		ws := h.State()
+		ws := h.Status()
 		switch ws.Status {
 		case "done":
 			si.Status = "done"
@@ -315,12 +315,12 @@ func (dg *DispatchGroup) RevalidateBranches(r *RepoContext) {
 }
 
 func resetWorkerForReuse(r *RepoContext, worker string) {
-	h, err := OpenWorker(r.workerStateFile(worker))
+	h, err := loadWorker(r, worker)
 	if err != nil {
-		h, _ = CreateIdleWorker(r.workerStateFile(worker))
+		h, _ = CreateIdleWorker(r, worker)
 	}
 	if h != nil {
-		h.Reclaim(r, worker)
+		h.Reclaim()
 	}
 }
 

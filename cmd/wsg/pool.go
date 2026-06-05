@@ -95,11 +95,29 @@ func (ws *WorkerState) MarkResumed(logFile string) {
 
 // ── WorkerHandle ──────────────────────────────────────────────────
 
+// WorkerHandle is the operational view of one worker slot. Consumer code
+// drives it via four high-level verbs - Dispatch, Resume, Reclaim, Status -
+// and treats the underlying WorkerState as a read-only snapshot. The state-
+// mutation primitives (MarkDispatched/Done/Failed/Resumed and the Run/Launch
+// process plumbing) are package-internal; they are still defined on
+// WorkerState for tests and Pool.Claim's atomic mark, but are not part of
+// the surface a caller is expected to compose against.
+//
+// A handle is wired up with repo + worker when constructed via LoadLiveWorker
+// or CreateIdleWorker; both fields are needed for the lifecycle verbs.
+// OpenWorker(path) loads a raw state by path for tests / low-level reads -
+// the lifecycle verbs are not available in that form.
 type WorkerHandle struct {
-	path  string
-	state *WorkerState
+	path   string
+	repo   *RepoContext
+	worker string
+	state  *WorkerState
 }
 
+// OpenWorker loads worker state from an explicit path. The returned handle
+// is not wired with repo+worker, so the lifecycle verbs (Dispatch/Resume/
+// Reclaim) cannot be used. For the standard "open worker N from repo R"
+// path use LoadLiveWorker, which also reconciles dead-busy state.
 func OpenWorker(path string) (*WorkerHandle, error) {
 	ws, err := loadWorkerState(path)
 	if err != nil {
@@ -108,66 +126,93 @@ func OpenWorker(path string) (*WorkerHandle, error) {
 	return &WorkerHandle{path: path, state: ws}, nil
 }
 
-func CreateIdleWorker(path string) (*WorkerHandle, error) {
-	ws := newIdleWorkerState()
-	h := &WorkerHandle{path: path, state: ws}
+// CreateIdleWorker writes a fresh idle state for worker under repo r and
+// returns a fully-wired handle. Used by Pool.grow when a new worker slot
+// is provisioned and by the TUI when a worker file disappears.
+func CreateIdleWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
+	h := &WorkerHandle{
+		path:   r.workerStateFile(worker),
+		repo:   r,
+		worker: worker,
+		state:  newIdleWorkerState(),
+	}
 	if err := h.save(); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-func (h *WorkerHandle) State() *WorkerState {
+// loadWorker reads worker N from repo R and returns a wired handle without
+// running liveness reconciliation. Use it on mutation-only paths where a
+// fresh log re-read would be wasted; otherwise prefer LoadLiveWorker.
+func loadWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
+	path := r.workerStateFile(worker)
+	ws, err := loadWorkerState(path)
+	if err != nil {
+		return nil, err
+	}
+	return &WorkerHandle{path: path, repo: r, worker: worker, state: ws}, nil
+}
+
+// Status returns a read-only snapshot of the worker's current state. The
+// returned pointer aliases the handle's internal state and reflects any
+// later mutation through this handle; callers should not mutate it.
+func (h *WorkerHandle) Status() *WorkerState {
 	return h.state
 }
 
-func (h *WorkerHandle) Dispatch(ticket, logFile, branchName string) error {
-	h.state.MarkDispatched(ticket, logFile, branchName)
-	return h.save()
+// Dispatch launches claude in the worker's workspace. The worker must
+// already be in busy state - Pool.Claim sets the ticket/log/branch fields
+// atomically before returning the worker name, so by the time Dispatch is
+// called the state file already reflects the run. In foreground mode the
+// process runs to completion and finalises the handle; the returned pid is
+// 0. In background mode the pid is returned and the supervisor goroutine
+// finalises the handle asynchronously when the process exits.
+func (h *WorkerHandle) Dispatch(inv claudeInvocation, fg bool) (int, error) {
+	return h.launch(inv, fg)
 }
 
-func (h *WorkerHandle) Done(exitCode int) error {
-	h.state.MarkDone(exitCode)
-	return h.save()
-}
-
-func (h *WorkerHandle) Failed(exitCode int, errMsg string) error {
-	h.state.MarkFailed(exitCode, errMsg)
-	return h.save()
-}
-
-func (h *WorkerHandle) Resume(logFile string) error {
+// Resume marks a non-busy worker busy on a fresh log file and launches
+// claude. Caller is expected to have built inv with SessionID extracted
+// from the previous run's log (via extractSessionID on Status().LogFile)
+// so claude resumes the same session rather than starting fresh.
+func (h *WorkerHandle) Resume(inv claudeInvocation, fg bool) (int, error) {
+	logFile := filepath.Join(h.repo.poolDir(), h.worker+".log")
 	h.state.MarkResumed(logFile)
-	return h.save()
+	if err := h.save(); err != nil {
+		return 0, err
+	}
+	return h.launch(inv, fg)
 }
 
-func (h *WorkerHandle) SetPID(pid int) error {
-	h.state.SetPID(pid)
-	return h.save()
-}
-
-func (h *WorkerHandle) Reset() error {
-	h.state.Reset()
-	return h.save()
-}
-
-// Reclaim returns the worker to idle: kills any live PID, resets state, and
-// fires an async jj restore + jj new main in the workspace dir if it exists.
-// The workspace restore is fire-and-forget; callers should not assume it has
-// completed when Reclaim returns.
-func (h *WorkerHandle) Reclaim(r *RepoContext, worker string) error {
+// Reclaim returns the worker to idle: kills any live PID, clears state,
+// and fires an async jj restore + jj new main in the workspace dir if it
+// exists. The workspace restore is fire-and-forget; callers should not
+// assume it has completed when Reclaim returns.
+func (h *WorkerHandle) Reclaim() error {
 	if h.state.PID != nil && processAlive(*h.state.PID) {
 		killProcess(*h.state.PID)
 	}
-	if err := h.Reset(); err != nil {
+	if err := h.reset(); err != nil {
 		return err
 	}
-	wspath := r.workerDir(worker)
+	if h.repo == nil || h.worker == "" {
+		return nil
+	}
+	wspath := h.repo.workerDir(h.worker)
 	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 		startBackground(wspath, os.DevNull, "sh", "-c",
 			"jj restore 2>/dev/null; jj new main 2>/dev/null")
 	}
 	return nil
+}
+
+// reset clears state to idle without process-kill or workspace restore.
+// The dismiss-terminal path uses this so a user can inspect / recover an
+// unpushed working copy after a failed run.
+func (h *WorkerHandle) reset() error {
+	h.state.Reset()
+	return h.save()
 }
 
 func (h *WorkerHandle) save() error {
@@ -224,7 +269,9 @@ func saveWorkerState(path string, ws *WorkerState) error {
 	return os.Rename(tmp, path)
 }
 
-func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
+// checkLiveness reconciles a busy handle against the running world: if the
+// recorded PID is no longer alive the handle is finalised from the log.
+func (h *WorkerHandle) checkLiveness() {
 	ws := h.state
 	if ws.Status != "busy" || ws.PID == nil {
 		return
@@ -232,7 +279,7 @@ func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
 	if processAlive(*ws.PID) {
 		return
 	}
-	h.finalizeFromLog(r, worker)
+	h.finalizeFromLog()
 }
 
 // LoadLiveWorker opens a worker's state and reconciles it against the running
@@ -243,11 +290,11 @@ func (h *WorkerHandle) CheckLiveness(r *RepoContext, worker string) {
 // raw OpenWorker for mutation-only paths where reconciliation would be a
 // wasted log read.
 func LoadLiveWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
-	h, err := OpenWorker(r.workerStateFile(worker))
+	h, err := loadWorker(r, worker)
 	if err != nil {
 		return nil, err
 	}
-	h.CheckLiveness(r, worker)
+	h.checkLiveness()
 	return h, nil
 }
 
@@ -256,7 +303,7 @@ func LoadLiveWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
 // on a success result, failed otherwise - including a run the CLI reports as
 // is_error even though the process itself exits 0. A missing or unparseable
 // result means the process died without reporting, also a failure.
-func (h *WorkerHandle) finalizeFromLog(r *RepoContext, worker string) {
+func (h *WorkerHandle) finalizeFromLog() {
 	ws := h.state
 	if ws.LogFile != nil {
 		if result := readLogResult(*ws.LogFile); result != nil {
@@ -265,8 +312,8 @@ func (h *WorkerHandle) finalizeFromLog(r *RepoContext, worker string) {
 				if result.ExitCode != nil {
 					ec = *result.ExitCode
 				}
-				h.Done(ec)
-				resolveWorkerBranch(r, worker, ws)
+				ws.MarkDone(ec)
+				h.resolveBranch()
 				h.save()
 			} else {
 				ec := 1
@@ -277,71 +324,95 @@ func (h *WorkerHandle) finalizeFromLog(r *RepoContext, worker string) {
 				if result.Error != nil {
 					errMsg = *result.Error
 				}
-				h.Failed(ec, errMsg)
+				ws.MarkFailed(ec, errMsg)
+				h.save()
 			}
 			return
 		}
 	}
-	h.Failed(1, "Process exited unexpectedly")
+	ws.MarkFailed(1, "Process exited unexpectedly")
+	h.save()
 }
 
-// Launch spawns claude in the worker's workspace using inv. The handle must
-// already be in busy state (claimIdleWorker for dispatch, h.Resume for resume).
-// In foreground mode the process runs to completion and finalises the handle;
-// the returned pid is 0. In background mode the pid is returned and the handle
-// is finalised asynchronously when the process exits.
-func (h *WorkerHandle) Launch(r *RepoContext, worker string, inv claudeInvocation, fg bool) (int, error) {
-	wspath := r.workerDir(worker)
-	logFile := filepath.Join(r.poolDir(), worker+".log")
+// resolveBranch refreshes the stored branch name from the worker's actual jj
+// bookmarks - useful after a run when the agent has created the real
+// `adam/<ticket>-<slug>` branch and the state file still holds the placeholder
+// ticket prefix. Mutates h.state in memory only; the caller is responsible
+// for persisting (finalizeFromLog folds it into its single save).
+func (h *WorkerHandle) resolveBranch() {
+	if h.repo == nil || h.worker == "" {
+		return
+	}
+	ws := h.state
+	if ws.BranchName == nil || *ws.BranchName == "" {
+		return
+	}
+	if resolved := jjResolveBranchForTicket(h.repo.workerDir(h.worker), *ws.BranchName); resolved != nil {
+		ws.BranchName = resolved
+	}
+}
+
+// refreshBranch is the standalone form of resolveBranch: mutates and persists.
+// Used by review-prompt building, where the placeholder ticket prefix may
+// still be in state because finalizeFromLog couldn't reach the workspace.
+func (h *WorkerHandle) refreshBranch() error {
+	h.resolveBranch()
+	return h.save()
+}
+
+// launch spawns claude in the worker's workspace using inv. The handle must
+// already be in busy state. In foreground mode the process runs to completion
+// and finalises the handle; the returned pid is 0. In background mode the pid
+// is returned and the handle is finalised asynchronously when the process
+// exits.
+func (h *WorkerHandle) launch(inv claudeInvocation, fg bool) (int, error) {
+	wspath := h.repo.workerDir(h.worker)
+	logFile := filepath.Join(h.repo.poolDir(), h.worker+".log")
 	argv := append([]string{"claude"}, inv.Args()...)
 	if fg {
-		h.RunFG(wspath, logFile, argv)
+		h.runFG(wspath, logFile, argv)
 		return 0, nil
 	}
-	return h.RunBG(r, worker, wspath, logFile, argv)
+	return h.runBG(wspath, logFile, argv)
 }
 
-func (h *WorkerHandle) RunFG(wspath, logFile string, claudeArgs []string) {
+func (h *WorkerHandle) runFG(wspath, logFile string, claudeArgs []string) {
 	exitCode, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
 	if err != nil {
-		h.Failed(1, err.Error())
+		h.state.MarkFailed(1, err.Error())
 	} else if exitCode == 0 {
-		h.Done(exitCode)
+		h.state.MarkDone(exitCode)
 	} else {
-		h.Failed(exitCode, "")
+		h.state.MarkFailed(exitCode, "")
 	}
+	h.save()
 }
 
-func (h *WorkerHandle) RunBG(r *RepoContext, worker, wspath, logFile string, claudeArgs []string) (int, error) {
+func (h *WorkerHandle) runBG(wspath, logFile string, claudeArgs []string) (int, error) {
 	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
 	if err != nil {
-		h.Failed(1, err.Error())
+		h.state.MarkFailed(1, err.Error())
+		h.save()
 		return 0, err
 	}
-	h.SetPID(pid)
+	h.state.SetPID(pid)
+	h.save()
 
-	path := h.path
+	// Re-open from disk in the supervisor so we don't race the main goroutine's
+	// view of state.
+	repo, worker := h.repo, h.worker
 	go func() {
 		waitForProcess(pid)
-		h, err := OpenWorker(path)
+		h2, err := loadWorker(repo, worker)
 		if err != nil {
 			return
 		}
-		if h.State().Status == "busy" {
-			h.finalizeFromLog(r, worker)
+		if h2.state.Status == "busy" {
+			h2.finalizeFromLog()
 		}
 	}()
 
 	return pid, nil
-}
-
-func resolveWorkerBranch(r *RepoContext, worker string, ws *WorkerState) {
-	if ws.BranchName == nil || *ws.BranchName == "" {
-		return
-	}
-	if resolved := jjResolveBranchForTicket(r.workerDir(worker), *ws.BranchName); resolved != nil {
-		ws.BranchName = resolved
-	}
 }
 
 // ── Pool ──────────────────────────────────────────────────────────
@@ -415,7 +486,7 @@ func (p *Pool) Snapshot() *PoolSnapshot {
 		if err != nil {
 			continue
 		}
-		switch h.State().Status {
+		switch h.Status().Status {
 		case "idle":
 			snap.Idle++
 		case "busy":
@@ -508,7 +579,6 @@ func (p *Pool) Resize(newSize int) error {
 // grow adds (newSize - oldSize) workers. Caller holds the lock.
 func (p *Pool) grow(newSize int) error {
 	r := p.repo
-	poolDir := r.poolDir()
 	oldSize := p.cfg.Size
 	var wg sync.WaitGroup
 	for i := 0; i < newSize-oldSize; i++ {
@@ -524,7 +594,7 @@ func (p *Pool) grow(newSize int) error {
 			defer wg.Done()
 			copyEnvFile(r.Root, wspath)
 			copySynapseClone(r.Root, wspath)
-			CreateIdleWorker(filepath.Join(poolDir, name+".json"))
+			CreateIdleWorker(r, name)
 		}(name, wspath)
 		info("  Created %s", name)
 	}
@@ -558,7 +628,7 @@ func (p *Pool) shrink(newSize int) error {
 			removable = append(removable, name)
 			continue
 		}
-		s := h.State().Status
+		s := h.Status().Status
 		if s == "idle" || s == "done" || s == "failed" {
 			removable = append(removable, name)
 		} else {
@@ -610,7 +680,7 @@ func (p *Pool) Remove(worker string) (int, error) {
 			return fmt.Errorf("worker %s not in pool", worker)
 		}
 		if h, err := LoadLiveWorker(p.repo, worker); err == nil {
-			if h.State().Status == "busy" {
+			if h.Status().Status == "busy" {
 				return fmt.Errorf("worker %s is busy. Reset it first: wsg pool reset %s", worker, worker)
 			}
 		}
@@ -800,7 +870,7 @@ func cmdPoolList() {
 		if err != nil {
 			continue
 		}
-		ws := h.State()
+		ws := h.Status()
 
 		ticket := "-"
 		if ws.Ticket != nil {

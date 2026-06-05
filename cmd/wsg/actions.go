@@ -49,20 +49,20 @@ func (a *WorkerActions) Review(worker string, fg bool) (int, error) {
 // fires an async `jj restore && jj new main` in the workspace. Same as
 // the [K]ill verb in the TUI.
 func (a *WorkerActions) Reset(worker string) error {
-	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	h, err := loadWorker(a.repo, worker)
 	if err != nil {
 		return err
 	}
-	return h.Reclaim(a.repo, worker)
+	return h.Reclaim()
 }
 
 // OpenPR opens the GitHub PR for the worker's branch in a browser.
 func (a *WorkerActions) OpenPR(worker string) error {
-	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	h, err := loadWorker(a.repo, worker)
 	if err != nil {
 		return err
 	}
-	ws := h.State()
+	ws := h.Status()
 	if ws.BranchName == nil || *ws.BranchName == "" {
 		return fmt.Errorf("worker %s has no branch", worker)
 	}
@@ -80,11 +80,11 @@ func (a *WorkerActions) OpenPR(worker string) error {
 // rebase is undone via `jj op undo` and an error is returned instructing
 // the caller to review instead.
 func (a *WorkerActions) Rebase(worker string) error {
-	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	h, err := loadWorker(a.repo, worker)
 	if err != nil {
 		return err
 	}
-	ws := h.State()
+	ws := h.Status()
 	if ws.BranchName == nil || *ws.BranchName == "" {
 		return fmt.Errorf("worker %s has no branch", worker)
 	}
@@ -104,11 +104,11 @@ func (a *WorkerActions) Rebase(worker string) error {
 // pool size when the worker was removed, or -1 if the worker was only
 // reset (size unchanged).
 func (a *WorkerActions) Dismiss(worker string) (int, error) {
-	h, err := OpenWorker(a.repo.workerStateFile(worker))
+	h, err := loadWorker(a.repo, worker)
 	if err != nil {
 		return -1, err
 	}
-	switch h.State().Status {
+	switch h.Status().Status {
 	case "busy":
 		return -1, fmt.Errorf("worker %s is busy", worker)
 	case "idle":
@@ -118,7 +118,7 @@ func (a *WorkerActions) Dismiss(worker string) (int, error) {
 		}
 		return p.Remove(worker)
 	default:
-		if err := h.Reset(); err != nil {
+		if err := h.reset(); err != nil {
 			return -1, err
 		}
 		return -1, nil

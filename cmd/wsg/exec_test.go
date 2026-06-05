@@ -7,62 +7,65 @@ import (
 	"time"
 )
 
-func TestRunClaudeFGSuccess(t *testing.T) {
-	dir := t.TempDir()
+// setupBusyHandle returns a wired-up handle whose state is already busy on
+// the given log file. Use it when the test wants to exercise the launch /
+// supervisor plumbing without going through Pool.Claim's atomic mark.
+func setupBusyHandle(t *testing.T, dir, worker, logFile string) (*WorkerHandle, *RepoContext) {
+	t.Helper()
 	poolDir := filepath.Join(dir, ".jj", "pool")
 	os.MkdirAll(poolDir, 0755)
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	h, err := CreateIdleWorker(r, worker)
+	if err != nil {
+		t.Fatalf("CreateIdleWorker: %v", err)
+	}
+	h.state.MarkDispatched("AMBA-42", logFile, "amba-42")
+	if err := h.save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	return h, r
+}
 
-	sf := filepath.Join(poolDir, "worker-1.json")
-	h, _ := CreateIdleWorker(sf)
-	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
+func TestRunClaudeFGSuccess(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := setupBusyHandle(t, dir, "worker-1", filepath.Join(dir, ".jj", "pool", "worker-1.log"))
 
 	logFile := filepath.Join(dir, "test.log")
-	h.RunFG(dir, logFile, []string{"true"})
+	h.runFG(dir, logFile, []string{"true"})
 
-	if h.State().Status != "done" {
-		t.Errorf("status = %q, want done", h.State().Status)
+	if h.Status().Status != "done" {
+		t.Errorf("status = %q, want done", h.Status().Status)
 	}
-	if h.State().ExitCode == nil || *h.State().ExitCode != 0 {
-		t.Errorf("exitCode = %v, want 0", h.State().ExitCode)
+	if h.Status().ExitCode == nil || *h.Status().ExitCode != 0 {
+		t.Errorf("exitCode = %v, want 0", h.Status().ExitCode)
 	}
-	if h.State().CompletedAt == nil {
+	if h.Status().CompletedAt == nil {
 		t.Error("completedAt should be set")
 	}
 }
 
 func TestRunClaudeFGFailure(t *testing.T) {
 	dir := t.TempDir()
-	poolDir := filepath.Join(dir, ".jj", "pool")
-	os.MkdirAll(poolDir, 0755)
-
-	sf := filepath.Join(poolDir, "worker-1.json")
-	h, _ := CreateIdleWorker(sf)
-	h.Dispatch("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
+	h, _ := setupBusyHandle(t, dir, "worker-1", filepath.Join(dir, ".jj", "pool", "worker-1.log"))
 
 	logFile := filepath.Join(dir, "test.log")
-	h.RunFG(dir, logFile, []string{"false"})
+	h.runFG(dir, logFile, []string{"false"})
 
-	if h.State().Status != "failed" {
-		t.Errorf("status = %q, want failed", h.State().Status)
+	if h.Status().Status != "failed" {
+		t.Errorf("status = %q, want failed", h.Status().Status)
 	}
-	if h.State().ExitCode == nil || *h.State().ExitCode != 1 {
-		t.Errorf("exitCode = %v, want 1", h.State().ExitCode)
+	if h.Status().ExitCode == nil || *h.Status().ExitCode != 1 {
+		t.Errorf("exitCode = %v, want 1", h.Status().ExitCode)
 	}
 }
 
 func TestRunClaudeBGSuccess(t *testing.T) {
 	dir := t.TempDir()
-	poolDir := filepath.Join(dir, ".jj", "pool")
-	os.MkdirAll(poolDir, 0755)
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, r := setupBusyHandle(t, dir, "worker-1", logFile)
 
-	sf := filepath.Join(poolDir, "worker-1.json")
-	logFile := filepath.Join(poolDir, "worker-1.log")
-	h, _ := CreateIdleWorker(sf)
-	h.Dispatch("AMBA-42", logFile, "amba-42")
-
-	r := &RepoContext{Root: dir}
 	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"success","is_error":false}'`}
-	pid, err := h.RunBG(r, "worker-1", dir, logFile, cmd)
+	pid, err := h.runBG(dir, logFile, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +73,7 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 		t.Errorf("pid = %d, want > 0", pid)
 	}
 
-	loaded := awaitTerminal(t, sf)
+	loaded := awaitTerminal(t, r.workerStateFile("worker-1"))
 	if loaded.Status != "done" {
 		t.Errorf("status = %q, want done", loaded.Status)
 	}
@@ -84,21 +87,15 @@ func TestRunClaudeBGSuccess(t *testing.T) {
 // not done, with the reported subtype as the error.
 func TestRunClaudeBGFailure(t *testing.T) {
 	dir := t.TempDir()
-	poolDir := filepath.Join(dir, ".jj", "pool")
-	os.MkdirAll(poolDir, 0755)
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, r := setupBusyHandle(t, dir, "worker-1", logFile)
 
-	sf := filepath.Join(poolDir, "worker-1.json")
-	logFile := filepath.Join(poolDir, "worker-1.log")
-	h, _ := CreateIdleWorker(sf)
-	h.Dispatch("AMBA-42", logFile, "amba-42")
-
-	r := &RepoContext{Root: dir}
 	cmd := []string{"sh", "-c", `echo '{"type":"result","subtype":"error_during_execution","is_error":true}'`}
-	if _, err := h.RunBG(r, "worker-1", dir, logFile, cmd); err != nil {
+	if _, err := h.runBG(dir, logFile, cmd); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	loaded := awaitTerminal(t, sf)
+	loaded := awaitTerminal(t, r.workerStateFile("worker-1"))
 	if loaded.Status != "failed" {
 		t.Errorf("status = %q, want failed", loaded.Status)
 	}

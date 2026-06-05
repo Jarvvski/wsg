@@ -226,7 +226,7 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 	}
 	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
 
-	h, err := OpenWorker(r.workerStateFile(worker))
+	h, err := loadWorker(r, worker)
 	if err != nil {
 		fatal("Failed to open worker state: %v", err)
 	}
@@ -244,7 +244,7 @@ func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *Dep
 
 	info("Dispatching %s to %s...", opts.TicketID, worker)
 
-	pid, err := h.Launch(r, worker, inv, opts.Foreground)
+	pid, err := h.Dispatch(inv, opts.Foreground)
 	if err != nil {
 		fatal("Failed to start worker: %v", err)
 	}

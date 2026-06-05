@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -20,20 +19,17 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 		return 0, fmt.Errorf("worker %s not found", displayWorker(worker))
 	}
 
-	if h.State().Status == "busy" {
+	ws := h.Status()
+	if ws.Status == "busy" {
 		return 0, fmt.Errorf("worker %s is busy", displayWorker(worker))
 	}
 
-	logFile := filepath.Join(r.poolDir(), worker+".log")
-
 	sessionID := ""
-	if h.State().LogFile != nil && *h.State().LogFile != "" {
-		if sid, err := extractSessionID(*h.State().LogFile); err == nil {
+	if ws.LogFile != nil && *ws.LogFile != "" {
+		if sid, err := extractSessionID(*ws.LogFile); err == nil {
 			sessionID = sid
 		}
 	}
-
-	h.Resume(logFile)
 
 	inv := claudeInvocation{
 		SessionID: sessionID,
@@ -43,7 +39,7 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (int, error) {
 		inv.SystemPrompt = opts.SystemPrompt
 	}
 
-	return h.Launch(r, worker, inv, opts.Foreground)
+	return h.Resume(inv, opts.Foreground)
 }
 
 func cmdSend(args []string) {
@@ -140,19 +136,18 @@ func cmdReview(args []string) {
 }
 
 func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
-	h, err := OpenWorker(r.workerStateFile(worker))
+	h, err := loadWorker(r, worker)
 	if err != nil {
 		return "", fmt.Errorf("worker %s not found", displayWorker(worker))
 	}
-	ws := h.State()
+	ws := h.Status()
 
 	if ws.BranchName == nil || *ws.BranchName == "" {
 		return "", fmt.Errorf("worker %s has no branch - has it run a dispatch?", worker)
 	}
 
 	if !strings.Contains(*ws.BranchName, "-") || !strings.HasPrefix(*ws.BranchName, "adam/") {
-		resolveWorkerBranch(r, worker, ws)
-		h.save()
+		h.refreshBranch()
 	}
 
 	repo := ghRepo(r)
@@ -226,8 +221,7 @@ func cmdMount(args []string) {
 		fatal("Not in a jj repo")
 	}
 
-	sf := r.workerStateFile(worker)
-	h, err := OpenWorker(sf)
+	h, err := loadWorker(r, worker)
 	if err != nil {
 		fatal("Worker %s not found", displayWorker(worker))
 	}
@@ -243,8 +237,8 @@ func cmdMount(args []string) {
 	}
 
 	sessionName := ""
-	if h.State().LogFile != nil && *h.State().LogFile != "" {
-		if sid, err := extractSessionID(*h.State().LogFile); err == nil {
+	if ws := h.Status(); ws.LogFile != nil && *ws.LogFile != "" {
+		if sid, err := extractSessionID(*ws.LogFile); err == nil {
 			sessionName = sid
 		}
 	}
