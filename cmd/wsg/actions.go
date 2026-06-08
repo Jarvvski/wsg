@@ -103,9 +103,10 @@ func (a *WorkerActions) Rebase(worker string) error {
 // Dismiss removes worker from the pool when idle, or resets it to idle
 // when in a terminal state (done/failed). Errors on busy. Returns the new
 // pool size when the worker was removed, or -1 if the worker was only
-// reset (size unchanged).
+// reset (size unchanged). Liveness is reconciled first so a dead-busy
+// worker can be dismissed without first running `wsg pool reset`.
 func (a *WorkerActions) Dismiss(worker string) (int, error) {
-	h, err := loadWorker(a.repo, worker)
+	h, err := LoadLiveWorker(a.repo, worker)
 	if err != nil {
 		return -1, err
 	}

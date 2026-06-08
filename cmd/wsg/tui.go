@@ -121,20 +121,30 @@ func (m *tuiModel) loadWorkers() {
 	if err != nil {
 		return
 	}
+	snap := p.Snapshot()
+	seen := make(map[string]WorkerView, len(snap.Workers))
+	for _, v := range snap.Workers {
+		seen[v.Name] = v
+	}
 	workers := make([]tuiWorker, 0, len(p.Config().Workers))
 	for _, name := range p.Config().Workers {
-		h, err := LoadLiveWorker(m.repo, name)
-		if err != nil {
-			h, _ = CreateIdleWorker(m.repo, name)
+		v, ok := seen[name]
+		if !ok {
+			// Snapshot skipped this worker (state file missing); seed an
+			// idle file so the row still renders.
+			h, err := CreateIdleWorker(m.repo, name)
+			if err != nil {
+				continue
+			}
+			v = WorkerView{State: h.Status()}
 		}
-		ws := h.Status()
 		activity := ""
-		if ws.LogFile != nil && *ws.LogFile != "" {
-			activity = readLastActivity(*ws.LogFile)
+		if v.State.LogFile != nil && *v.State.LogFile != "" {
+			activity = readLastActivity(*v.State.LogFile)
 		}
 		workers = append(workers, tuiWorker{
 			name:         name,
-			state:        ws,
+			state:        v.State,
 			lastActivity: activity,
 		})
 	}

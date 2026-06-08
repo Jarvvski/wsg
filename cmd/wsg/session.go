@@ -193,7 +193,7 @@ func resumeBadge(o ResumeOutcome) string {
 }
 
 func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
-	h, err := loadWorker(r, worker)
+	h, err := LoadLiveWorker(r, worker)
 	if err != nil {
 		return "", fmt.Errorf("worker %s not found", displayWorker(worker))
 	}

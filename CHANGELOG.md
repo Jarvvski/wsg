@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.3.3 - 2026-06-08
+
+### Fixed
+
+- **Shell completion and `wsg dismiss` no longer trust stale `busy` state for workers whose process has died.** Shell completion (`__wsg_non_busy_workers`, `idle-workers`, `done-workers`, `failed-workers`) and `wsg dismiss` were reading worker JSON directly without reconciling against running PIDs, so a worker whose claude process had exited but whose state file still said `busy` was hidden from completion and refused by dismiss until the user ran `wsg pool reset`. All pool enumeration now flows through `Pool.Snapshot`, which liveness-checks every worker, and `Dismiss` reconciles before deciding - so a dead-busy worker is offered, dismissed, or reset on the next command rather than waiting for a manual reset.
+
 ## 0.3.2 - 2026-06-08
 
 ### Fixed

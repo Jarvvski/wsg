@@ -55,17 +55,14 @@ func cmdListPoolWorkerStates(state WorkerStatus) {
 	if err != nil {
 		return
 	}
-	for _, w := range p.Config().Workers {
-		ws, err := loadWorkerState(r.workerStateFile(w))
-		if err != nil {
-			continue
-		}
+	for _, v := range p.Snapshot().Workers {
+		ws := v.State
 		if state == "" || ws.Status == state {
 			desc := string(ws.Status)
 			if ws.Ticket != nil {
 				desc += " " + *ws.Ticket
 			}
-			fmt.Printf("%s\t%s\n", displayWorker(w), desc)
+			fmt.Printf("%s\t%s\n", displayWorker(v.Name), desc)
 		}
 	}
 }
@@ -94,17 +91,14 @@ func cmdInternalComplete(args []string) {
 		if err != nil {
 			return
 		}
-		for _, w := range p.Config().Workers {
-			ws, err := loadWorkerState(r.workerStateFile(w))
-			if err != nil {
-				continue
-			}
+		for _, v := range p.Snapshot().Workers {
+			ws := v.State
 			if !ws.Status.IsActive() {
 				desc := string(ws.Status)
 				if ws.Ticket != nil {
 					desc += " " + *ws.Ticket
 				}
-				fmt.Printf("%s\t%s\n", displayWorker(w), desc)
+				fmt.Printf("%s\t%s\n", displayWorker(v.Name), desc)
 			}
 		}
 	}

@@ -605,15 +605,26 @@ type Pool struct {
 	cfg  *PoolConfig
 }
 
-// PoolSnapshot is a moment-in-time view: cfg fields plus a live count of
-// each worker's status (reconciled against PIDs via LoadLiveWorker).
+// PoolSnapshot is a moment-in-time view of the pool: one WorkerView per
+// configured worker (reconciled against PIDs via LoadLiveWorker) plus the
+// rolled-up status counts. It is the single external enumeration path -
+// callers that want to walk the pool consume this rather than calling
+// loadWorkerState or LoadLiveWorker directly, so liveness is uniform.
 type PoolSnapshot struct {
 	Size    int
-	Workers []string
+	Workers []WorkerView
 	Idle    int
 	Busy    int
 	Done    int
 	Failed  int
+}
+
+// WorkerView is the frozen, liveness-reconciled view of one worker in a
+// snapshot. State aliases the originating handle's internal state at
+// snapshot time; callers must treat it as read-only.
+type WorkerView struct {
+	Name  string
+	State *WorkerState
 }
 
 // OpenPool reads .jj/pool.json. Returns an error if no pool exists.
@@ -651,22 +662,25 @@ func (p *Pool) Config() *PoolConfig {
 }
 
 // Snapshot reads every worker state file, reconciling dead-busy entries
-// via LoadLiveWorker, and returns the live counts. Does not take the
-// lock and is a best-effort view: another process can flip a worker's
-// state the instant after the read returns. It exists for TUI rendering
-// and CLI status output - never use it to make a claim decision. The
+// via LoadLiveWorker, and returns one WorkerView per configured worker
+// alongside the live status counts. Does not take the lock and is a
+// best-effort view: another process can flip a worker's state the instant
+// after the read returns. It exists for TUI rendering, CLI status output,
+// and shell completion - never use it to make a claim decision. The
 // reserve verbs (Reserve, GrowAndReserve, Claim) are the locked path.
 func (p *Pool) Snapshot() *PoolSnapshot {
 	snap := &PoolSnapshot{
 		Size:    p.cfg.Size,
-		Workers: append([]string(nil), p.cfg.Workers...),
+		Workers: make([]WorkerView, 0, len(p.cfg.Workers)),
 	}
 	for _, name := range p.cfg.Workers {
 		h, err := LoadLiveWorker(p.repo, name)
 		if err != nil {
 			continue
 		}
-		switch h.Status().Status {
+		ws := h.Status()
+		snap.Workers = append(snap.Workers, WorkerView{Name: name, State: ws})
+		switch ws.Status {
 		case WorkerStatusIdle:
 			snap.Idle++
 		case WorkerStatusBusy:
@@ -1117,17 +1131,13 @@ func cmdPoolList() {
 		fatal("No pool. Run: wsg pool create --size N")
 	}
 
-	idle, busy, doneCount, failed := 0, 0, 0, 0
+	snap := p.Snapshot()
 
 	fmt.Printf("%-10s %-10s %-14s %s\n", "WORKER", "STATUS", "TICKET", "ELAPSED")
 	fmt.Printf("%-10s %-10s %-14s %s\n", "------", "------", "------", "-------")
 
-	for _, worker := range p.Config().Workers {
-		h, err := LoadLiveWorker(r, worker)
-		if err != nil {
-			continue
-		}
-		ws := h.Status()
+	for _, v := range snap.Workers {
+		ws := v.State
 
 		ticket := "-"
 		if ws.Ticket != nil {
@@ -1151,23 +1161,12 @@ func cmdPoolList() {
 			paddedStatus = colorize(paddedStatus, colorRed)
 		}
 
-		fmt.Printf("%-10s %s %-14s %s\n", displayWorker(worker), paddedStatus, ticket, elapsed)
-
-		switch ws.Status {
-		case WorkerStatusIdle:
-			idle++
-		case WorkerStatusBusy:
-			busy++
-		case WorkerStatusDone:
-			doneCount++
-		case WorkerStatusFailed:
-			failed++
-		}
+		fmt.Printf("%-10s %s %-14s %s\n", displayWorker(v.Name), paddedStatus, ticket, elapsed)
 	}
 
 	fmt.Println()
 	fmt.Printf("Pool: %d idle, %d busy, %d done, %d failed (%d total)\n",
-		idle, busy, doneCount, failed, p.Config().Size)
+		snap.Idle, snap.Busy, snap.Done, snap.Failed, snap.Size)
 }
 
 func cmdPoolDestroy() {
