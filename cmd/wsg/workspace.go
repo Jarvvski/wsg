@@ -59,9 +59,11 @@ func cmdAdd(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	if cacheHas(entries, name) {
-		fmt.Println(wspath)
-		return
+	for _, e := range entries {
+		if e.Name == name {
+			fmt.Println(wspath)
+			return
+		}
 	}
 
 	wait, err := Provision(r, name, *revision, AdHocRole)
@@ -99,7 +101,7 @@ func Provision(r *RepoContext, name, revision string, role ProvisionRole) (func(
 	if err := jjAddWorkspace(r.Root, wspath, revision); err != nil {
 		return nil, err
 	}
-	cacheAddEntry(r.cacheFile(), name, wspath)
+	cacheRebuild(r)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -121,7 +123,7 @@ func Provision(r *RepoContext, name, revision string, role ProvisionRole) (func(
 func Teardown(r *RepoContext, name string) error {
 	wspath := r.workerDir(name)
 	jjForgetWorkspace(r.Root, name)
-	cacheRemoveEntry(r.cacheFile(), name)
+	cacheRebuild(r)
 	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
 		os.RemoveAll(wspath)
 	}

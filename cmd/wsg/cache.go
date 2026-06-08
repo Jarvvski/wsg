@@ -19,12 +19,8 @@ func cacheRead(file string) ([]CacheEntry, error) {
 		}
 		return nil, err
 	}
-	return parseCacheLines(string(data)), nil
-}
-
-func parseCacheLines(s string) []CacheEntry {
 	var entries []CacheEntry
-	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if line == "" {
 			continue
 		}
@@ -34,7 +30,7 @@ func parseCacheLines(s string) []CacheEntry {
 		}
 		entries = append(entries, CacheEntry{Name: parts[0], Path: parts[1]})
 	}
-	return entries
+	return entries, nil
 }
 
 func cacheWrite(file string, entries []CacheEntry) error {
@@ -47,50 +43,6 @@ func cacheWrite(file string, entries []CacheEntry) error {
 		return err
 	}
 	return os.Rename(tmp, file)
-}
-
-func cacheHas(entries []CacheEntry, name string) bool {
-	for _, e := range entries {
-		if e.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func cacheFindPath(entries []CacheEntry, name string) string {
-	for _, e := range entries {
-		if e.Name == name {
-			return e.Path
-		}
-	}
-	return ""
-}
-
-func cacheAddEntry(file string, name string, path string) error {
-	entries, err := cacheRead(file)
-	if err != nil {
-		return err
-	}
-	if cacheHas(entries, name) {
-		return nil
-	}
-	entries = append(entries, CacheEntry{Name: name, Path: path})
-	return cacheWrite(file, entries)
-}
-
-func cacheRemoveEntry(file string, name string) error {
-	entries, err := cacheRead(file)
-	if err != nil {
-		return err
-	}
-	var filtered []CacheEntry
-	for _, e := range entries {
-		if e.Name != name {
-			filtered = append(filtered, e)
-		}
-	}
-	return cacheWrite(file, filtered)
 }
 
 func cacheRebuild(r *RepoContext) ([]CacheEntry, error) {
@@ -122,8 +74,7 @@ func cacheRebuild(r *RepoContext) ([]CacheEntry, error) {
 }
 
 func cacheGet(r *RepoContext) ([]CacheEntry, error) {
-	cf := r.cacheFile()
-	entries, err := cacheRead(cf)
+	entries, err := cacheRead(r.cacheFile())
 	if err != nil {
 		return nil, err
 	}
