@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.3.1 - 2026-06-08
+
+### Fixed
+
+- **TUI now reflects a dispatch within milliseconds instead of after the Linear sub-issue fetch.** `[n]` in the TUI spawned `wsg __orchestrate`, which ran a Claude+Linear MCP round-trip (`BuildDispatchGroup`) before reserving a worker - so the row stayed idle for several seconds even though work had begun. The orchestrator now reserves the worker (and auto-grows the pool if needed) up front and only then fetches the sub-issue graph; if sub-issues turn out to exist the placeholder is released so the orchestrated flow can claim per-sub-issue slots cleanly. For the common leaf-ticket case the worker shows busy on the very next 2 s tick.
+
 ## 0.3.0 - 2026-06-08
 
 ### Changed

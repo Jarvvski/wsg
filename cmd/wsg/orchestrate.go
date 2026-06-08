@@ -677,31 +677,55 @@ func cmdOrchestrate(args []string) {
 	var dg *DispatchGroup
 	if existing := LoadLiveDispatchGroup(r, parent); existing != nil {
 		dg = existing
-	} else {
-		dg, err = BuildDispatchGroup(r, parent, &opts)
-		if err != nil {
-			fatal("Failed to build dependency graph: %v", err)
-		}
-		if dg == nil {
-			// No sub-issues - fall back to single-ticket dispatch
-			opts.TicketID = parent
-			p, perr := OpenPool(r)
-			if perr != nil {
-				fatal("No pool. Run: wsg pool create --size N")
-			}
-			workers, werr := p.Reserve([]string{parent})
-			var pf *PoolFull
-			if errors.As(werr, &pf) {
-				info("Auto-expanding pool to %d for %s", p.Config().Size+pf.Gap(), parent)
-				workers, werr = p.GrowAndReserve([]string{parent})
-			}
-			if werr != nil {
-				fatal("No idle workers for %s: %v", parent, werr)
-			}
-			launchWorker(r, workers[0], &opts, nil)
-			return
-		}
+		cmdDispatchOrchestrated(r, dg, &opts)
+		return
 	}
 
+	// Reserve a worker up front so the TUI shows status=busy within
+	// milliseconds. BuildDispatchGroup runs a Claude+Linear MCP round-trip
+	// that can take several seconds; without this pre-reservation the
+	// worker state file isn't written until that call returns.
+	p, perr := OpenPool(r)
+	if perr != nil {
+		fatal("No pool. Run: wsg pool create --size N")
+	}
+	workers, werr := p.Reserve([]string{parent})
+	var pf *PoolFull
+	if errors.As(werr, &pf) {
+		info("Auto-expanding pool to %d for %s", p.Config().Size+pf.Gap(), parent)
+		workers, werr = p.GrowAndReserve([]string{parent})
+	}
+	if werr != nil {
+		fatal("No idle workers for %s: %v", parent, werr)
+	}
+	reserved := workers[0]
+
+	dg, err = BuildDispatchGroup(r, parent, &opts)
+	if err != nil {
+		releaseReservation(r, reserved)
+		fatal("Failed to build dependency graph: %v", err)
+	}
+	if dg == nil {
+		// No sub-issues - launch the already-reserved worker.
+		opts.TicketID = parent
+		launchWorker(r, reserved, &opts, nil)
+		return
+	}
+
+	// Sub-issues exist - release the placeholder so the orchestrator can
+	// claim workers per sub-issue from a clean idle slot.
+	releaseReservation(r, reserved)
 	cmdDispatchOrchestrated(r, dg, &opts)
+}
+
+// releaseReservation returns a worker reserved by cmdOrchestrate back to
+// idle without killing any process - the reservation has only written
+// state, not launched claude yet.
+func releaseReservation(r *RepoContext, worker string) {
+	h, err := loadWorker(r, worker)
+	if err != nil {
+		return
+	}
+	h.state.Reset()
+	h.save()
 }
