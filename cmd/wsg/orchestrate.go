@@ -280,8 +280,8 @@ func (dg *DispatchGroup) SyncFromWorkers(world DispatchWorld) bool {
 			si.Status = SubIssueStatusDone
 			now := nowUTC()
 			si.CompletedAt = &now
-			if ws.HasBranch() {
-				b := ws.Branch()
+			if ws.Branch != "" {
+				b := ws.Branch
 				si.Branch = &b
 			}
 			changed = true

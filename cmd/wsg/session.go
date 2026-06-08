@@ -197,14 +197,8 @@ func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("worker %s not found", displayWorker(worker))
 	}
-	ws := h.Status()
-
-	if !ws.HasBranch() {
+	if h.Status().Branch == "" {
 		return "", fmt.Errorf("worker %s has no branch - has it run a dispatch?", worker)
-	}
-
-	if !ws.BranchResolved() {
-		h.refreshBranch()
 	}
 
 	repo := ghRepo(r)
@@ -212,7 +206,7 @@ func buildWorkerReviewPrompt(r *RepoContext, worker string) (string, error) {
 		return "", fmt.Errorf("cannot detect GitHub repo")
 	}
 
-	branch := ws.Branch()
+	branch := h.Branch()
 	pr, err := ghPRForBranch(repo, branch)
 	if err != nil {
 		return "", err

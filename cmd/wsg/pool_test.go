@@ -25,11 +25,8 @@ func TestMarkDispatched(t *testing.T) {
 	if ws.LogFile == nil || *ws.LogFile != "/tmp/worker-1.log" {
 		t.Errorf("logFile = %v, want /tmp/worker-1.log", ws.LogFile)
 	}
-	if ws.BranchPrefix != "amba-42" {
-		t.Errorf("BranchPrefix = %q, want amba-42", ws.BranchPrefix)
-	}
-	if ws.ResolvedBranch != nil {
-		t.Errorf("ResolvedBranch = %v, want nil at dispatch", ws.ResolvedBranch)
+	if ws.Branch != "amba-42" {
+		t.Errorf("Branch = %q, want amba-42 (placeholder)", ws.Branch)
 	}
 	if ws.StartedAt == nil || *ws.StartedAt == "" {
 		t.Error("startedAt should be set")
@@ -52,9 +49,9 @@ func TestMarkResumed(t *testing.T) {
 	ticket := "AMBA-42"
 	branch := "adam/amba-42-fix-login"
 	ws := &WorkerState{
-		Status:         WorkerStatusDone,
-		Ticket:         &ticket,
-		ResolvedBranch: &branch,
+		Status: WorkerStatusDone,
+		Ticket: &ticket,
+		Branch: branch,
 	}
 
 	ws.MarkResumed("/tmp/worker-1.log")
@@ -65,8 +62,8 @@ func TestMarkResumed(t *testing.T) {
 	if ws.Ticket == nil || *ws.Ticket != "AMBA-42" {
 		t.Error("ticket should be preserved")
 	}
-	if ws.ResolvedBranch == nil || *ws.ResolvedBranch != "adam/amba-42-fix-login" {
-		t.Error("ResolvedBranch should be preserved")
+	if ws.Branch != "adam/amba-42-fix-login" {
+		t.Errorf("Branch = %q, want adam/amba-42-fix-login (resolved branch preserved across resume)", ws.Branch)
 	}
 	if ws.LogFile == nil || *ws.LogFile != "/tmp/worker-1.log" {
 		t.Errorf("logFile = %v, want /tmp/worker-1.log", ws.LogFile)
@@ -165,11 +162,8 @@ func TestReset(t *testing.T) {
 	if ws.LogFile != nil {
 		t.Error("logFile should be nil")
 	}
-	if ws.BranchPrefix != "" {
-		t.Errorf("BranchPrefix = %q, want empty", ws.BranchPrefix)
-	}
-	if ws.ResolvedBranch != nil {
-		t.Error("ResolvedBranch should be nil")
+	if ws.Branch != "" {
+		t.Errorf("Branch = %q, want empty after reset", ws.Branch)
 	}
 	if ws.ExitCode != nil {
 		t.Error("exitCode should be nil")
@@ -292,12 +286,12 @@ func TestWorkerStateBusyRoundTrip(t *testing.T) {
 	branch := "amba-42"
 
 	ws := &WorkerState{
-		Status:       WorkerStatusBusy,
-		Ticket:       &ticket,
-		PID:          &pid,
-		StartedAt:    &startedAt,
-		LogFile:      &logFile,
-		BranchPrefix: branch,
+		Status:    WorkerStatusBusy,
+		Ticket:    &ticket,
+		PID:       &pid,
+		StartedAt: &startedAt,
+		LogFile:   &logFile,
+		Branch:    branch,
 	}
 
 	dir := t.TempDir()
@@ -325,15 +319,13 @@ func TestWorkerStateBusyRoundTrip(t *testing.T) {
 	}
 }
 
-// TestBranchNameWireCompat fences the on-disk shape jj-wsx reads against
-// the in-memory BranchPrefix/ResolvedBranch split: the JSON always carries
-// a single "branch_name" key, with the resolved form preferred over the
-// placeholder prefix. UnmarshalJSON must then route that single value back
-// into the right slot - "<branchOwner>/..." into ResolvedBranch, anything
-// else into BranchPrefix.
+// TestBranchNameWireCompat fences the on-disk shape jj-wsx reads: the JSON
+// always carries a single "branch_name" key. WorkerState.Branch holds the
+// best-known value (placeholder until WorkerHandle.Branch() resolves it),
+// and the wire round-trips that single string through unchanged.
 func TestBranchNameWireCompat(t *testing.T) {
-	t.Run("prefix only marshals as branch_name", func(t *testing.T) {
-		ws := &WorkerState{Status: WorkerStatusBusy, BranchPrefix: "amba-42"}
+	t.Run("placeholder marshals as branch_name", func(t *testing.T) {
+		ws := &WorkerState{Status: WorkerStatusBusy, Branch: "amba-42"}
 		data, err := json.Marshal(ws)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
@@ -347,22 +339,17 @@ func TestBranchNameWireCompat(t *testing.T) {
 		}
 	})
 
-	t.Run("resolved beats prefix on wire", func(t *testing.T) {
-		resolved := "adam/amba-42-fix"
-		ws := &WorkerState{
-			Status:         WorkerStatusDone,
-			BranchPrefix:   "amba-42",
-			ResolvedBranch: &resolved,
-		}
+	t.Run("resolved branch marshals as branch_name", func(t *testing.T) {
+		ws := &WorkerState{Status: WorkerStatusDone, Branch: "adam/amba-42-fix"}
 		data, _ := json.Marshal(ws)
 		var m map[string]any
 		json.Unmarshal(data, &m)
 		if m["branch_name"] != "adam/amba-42-fix" {
-			t.Errorf("branch_name = %v, want adam/amba-42-fix (resolved should win)", m["branch_name"])
+			t.Errorf("branch_name = %v, want adam/amba-42-fix", m["branch_name"])
 		}
 	})
 
-	t.Run("neither set marshals null", func(t *testing.T) {
+	t.Run("empty branch marshals null", func(t *testing.T) {
 		ws := &WorkerState{Status: WorkerStatusIdle}
 		data, _ := json.Marshal(ws)
 		var m map[string]any
@@ -375,29 +362,23 @@ func TestBranchNameWireCompat(t *testing.T) {
 		}
 	})
 
-	t.Run("unmarshal routes resolved into ResolvedBranch", func(t *testing.T) {
+	t.Run("unmarshal loads branch_name into Branch", func(t *testing.T) {
 		raw := []byte(`{"status":"done","ticket":null,"pid":null,"started_at":null,"completed_at":null,"log_file":null,"branch_name":"adam/amba-42-fix","exit_code":null,"error":null}`)
 		var ws WorkerState
 		if err := json.Unmarshal(raw, &ws); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if ws.ResolvedBranch == nil || *ws.ResolvedBranch != "adam/amba-42-fix" {
-			t.Errorf("ResolvedBranch = %v, want adam/amba-42-fix", ws.ResolvedBranch)
-		}
-		if ws.BranchPrefix != "" {
-			t.Errorf("BranchPrefix = %q, want empty (resolved branch should not bleed into prefix)", ws.BranchPrefix)
+		if ws.Branch != "adam/amba-42-fix" {
+			t.Errorf("Branch = %q, want adam/amba-42-fix", ws.Branch)
 		}
 	})
 
-	t.Run("unmarshal routes prefix into BranchPrefix", func(t *testing.T) {
+	t.Run("unmarshal loads placeholder branch_name into Branch", func(t *testing.T) {
 		raw := []byte(`{"status":"busy","ticket":null,"pid":null,"started_at":null,"completed_at":null,"log_file":null,"branch_name":"amba-42","exit_code":null,"error":null}`)
 		var ws WorkerState
 		json.Unmarshal(raw, &ws)
-		if ws.BranchPrefix != "amba-42" {
-			t.Errorf("BranchPrefix = %q, want amba-42", ws.BranchPrefix)
-		}
-		if ws.ResolvedBranch != nil {
-			t.Errorf("ResolvedBranch = %v, want nil (placeholder should not look resolved)", ws.ResolvedBranch)
+		if ws.Branch != "amba-42" {
+			t.Errorf("Branch = %q, want amba-42", ws.Branch)
 		}
 	})
 }

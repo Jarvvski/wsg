@@ -63,15 +63,14 @@ func (a *WorkerActions) OpenPR(worker string) error {
 	if err != nil {
 		return err
 	}
-	ws := h.Status()
-	if !ws.HasBranch() {
+	if h.Status().Branch == "" {
 		return fmt.Errorf("worker %s has no branch", worker)
 	}
 	repo := ghRepo(a.repo)
 	if repo == "" {
 		return fmt.Errorf("cannot detect GitHub repo")
 	}
-	branch := ws.Branch()
+	branch := h.Branch()
 	if err := ghOpenInBrowser(repo, branch); err != nil {
 		return fmt.Errorf("no PR for branch %s", branch)
 	}
@@ -86,11 +85,10 @@ func (a *WorkerActions) Rebase(worker string) error {
 	if err != nil {
 		return err
 	}
-	ws := h.Status()
-	if !ws.HasBranch() {
+	if h.Status().Branch == "" {
 		return fmt.Errorf("worker %s has no branch", worker)
 	}
-	branch := ws.Branch()
+	branch := h.Branch()
 	wspath := a.repo.workerDir(worker)
 	if err := jjRebase(wspath, branch, "main"); err != nil {
 		return err

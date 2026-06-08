@@ -317,7 +317,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "Cannot rebase: worker is busy"
 			return m, nil
 		}
-		if !w.state.HasBranch() {
+		if w.state.Branch == "" {
 			m.status = "Cannot rebase: no branch"
 			return m, nil
 		}
@@ -328,7 +328,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if w == nil {
 			return m, nil
 		}
-		if !w.state.HasBranch() {
+		if w.state.Branch == "" {
 			m.status = "No branch - run a dispatch first"
 			return m, nil
 		}
@@ -343,7 +343,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if w == nil {
 			return m, nil
 		}
-		if !w.state.HasBranch() {
+		if w.state.Branch == "" {
 			m.status = "No branch - run a dispatch first"
 			return m, nil
 		}
