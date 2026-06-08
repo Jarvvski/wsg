@@ -29,7 +29,33 @@ const (
 	viewDispatch
 )
 
-const defaultStatus = "[n]ew  [N]all  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [K]ill  [q]uit"
+// defaultStatus is the keybinding legend painted at the bottom of the list
+// view. Each chunk is colored by action category so the palette mirrors the
+// status column - yellow for "makes a worker busy", green for "acts on a
+// finished worker", red for the destructive [K]ill, dim for passive nav.
+var defaultStatus = buildDefaultStatus()
+
+func buildDefaultStatus() string {
+	chunks := []struct {
+		label, color string
+	}{
+		{"[n]ew", colorYellow},
+		{"[N]all", colorYellow},
+		{"[f]ollow", colorDim},
+		{"[s]end", colorYellow},
+		{"[r]eview", colorYellow},
+		{"[g]rebase", colorGreen},
+		{"[o]pen PR", colorGreen},
+		{"[d]ismiss", colorGreen},
+		{"[K]ill", colorRed},
+		{"[q]uit", colorDim},
+	}
+	parts := make([]string, len(chunks))
+	for i, c := range chunks {
+		parts[i] = colorize(c.label, c.color)
+	}
+	return strings.Join(parts, "  ")
+}
 
 type tuiWorker struct {
 	name         string

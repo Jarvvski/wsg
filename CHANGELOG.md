@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.3.0 - 2026-06-08
+
+### Changed
+
+- **TUI keybinding legend is now color-coded.** The footer hints (`[n]ew  [N]all  [f]ollow  [s]end  [r]eview  [g]rebase  [o]pen PR  [d]ismiss  [K]ill  [q]uit`) used to render in plain text, leaving the destructive `[K]ill` indistinguishable from the rest. Each chunk is now painted to mirror the status column: yellow for actions that make a worker busy (`n N s r`), green for actions on a finished worker (`g o d`), red for `[K]ill`, dim for passive nav (`f q`).
+
 ## 0.2.1 - 2026-06-05
 
 ### Fixed
