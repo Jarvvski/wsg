@@ -471,6 +471,57 @@ func LoadLiveWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
 	return h, nil
 }
 
+// WorkerReader is a stateful, mtime-gated wrapper around LoadLiveWorker for
+// tick-style read loops (the orchestrator's watch loop). Each Read stats
+// the worker's state file; identical mtimes return the cached *WorkerState
+// without re-parsing JSON or re-running liveness reconciliation. Once the
+// file is rewritten - by the supervisor goroutine finalising a busy worker,
+// by Pool.Claim atomically marking idle→busy, or by any other process - the
+// next Read sees a fresh mtime, falls through to LoadLiveWorker, and
+// re-caches. The returned pointer aliases the cache; callers must treat it
+// as read-only, the same contract WorkerView.State already carries.
+type WorkerReader struct {
+	repo  *RepoContext
+	cache map[string]workerCacheEntry
+}
+
+type workerCacheEntry struct {
+	mtime time.Time
+	state *WorkerState
+}
+
+// NewWorkerReader returns a fresh reader with an empty cache. A reader's
+// cache grows to one entry per worker name it has ever read; for the
+// orchestrator that is bounded by the pool size.
+func NewWorkerReader(r *RepoContext) *WorkerReader {
+	return &WorkerReader{repo: r, cache: map[string]workerCacheEntry{}}
+}
+
+// Read returns the worker's current state, reusing the cached value when
+// the state file's mtime is unchanged since the last successful read. A
+// fresh mtime triggers a full LoadLiveWorker - the same reconciliation any
+// other reader would perform - and the result is cached for the next tick.
+func (wr *WorkerReader) Read(name string) (*WorkerState, error) {
+	path := wr.repo.workerStateFile(name)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if entry, ok := wr.cache[name]; ok && entry.mtime.Equal(fi.ModTime()) {
+		return entry.state, nil
+	}
+	h, err := LoadLiveWorker(wr.repo, name)
+	if err != nil {
+		return nil, err
+	}
+	mtime := fi.ModTime()
+	if fi2, err := os.Stat(path); err == nil {
+		mtime = fi2.ModTime()
+	}
+	wr.cache[name] = workerCacheEntry{mtime: mtime, state: h.Status()}
+	return h.Status(), nil
+}
+
 // finalizeFromLog transitions a busy worker to its terminal state from the
 // agent's stream-json log: done (with the logged exit code and resolved branch)
 // on a success result, failed otherwise - including a run the CLI reports as

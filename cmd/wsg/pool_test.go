@@ -1094,3 +1094,75 @@ func TestWaitFinalIdempotent(t *testing.T) {
 		t.Errorf("completed_at changed across calls: %v -> %v", firstCompleted, h2.Status().CompletedAt)
 	}
 }
+
+func TestWorkerReaderCachesByMtime(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	os.MkdirAll(poolDir, 0755)
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	ws := newIdleWorkerState()
+	saveWorkerState(r.workerStateFile("worker-1"), ws)
+
+	wr := NewWorkerReader(r)
+	first, err := wr.Read("worker-1")
+	if err != nil {
+		t.Fatalf("first Read: %v", err)
+	}
+	second, err := wr.Read("worker-1")
+	if err != nil {
+		t.Fatalf("second Read: %v", err)
+	}
+	if first != second {
+		t.Error("cache hit should return the same *WorkerState pointer")
+	}
+}
+
+func TestWorkerReaderRefreshesOnMtimeChange(t *testing.T) {
+	dir := t.TempDir()
+	poolDir := filepath.Join(dir, ".jj", "pool")
+	os.MkdirAll(poolDir, 0755)
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	path := r.workerStateFile("worker-1")
+
+	saveWorkerState(path, newIdleWorkerState())
+
+	wr := NewWorkerReader(r)
+	first, err := wr.Read("worker-1")
+	if err != nil {
+		t.Fatalf("first Read: %v", err)
+	}
+	if first.Status != WorkerStatusIdle {
+		t.Fatalf("first status = %q, want idle", first.Status)
+	}
+
+	// Bump mtime forward so the comparison can't tie on filesystems with
+	// coarse timestamp granularity.
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	busy := newIdleWorkerState()
+	busy.MarkDispatched("AMBA-42", filepath.Join(poolDir, "worker-1.log"), "amba-42")
+	saveWorkerState(path, busy)
+
+	second, err := wr.Read("worker-1")
+	if err != nil {
+		t.Fatalf("second Read: %v", err)
+	}
+	if second.Status != WorkerStatusBusy {
+		t.Errorf("status after rewrite = %q, want busy", second.Status)
+	}
+	if first == second {
+		t.Error("mtime change should yield a fresh *WorkerState pointer")
+	}
+}
+
+func TestWorkerReaderMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	wr := NewWorkerReader(r)
+	if _, err := wr.Read("worker-missing"); err == nil {
+		t.Fatal("expected error for missing worker state file")
+	}
+}

@@ -359,25 +359,23 @@ func (dg *DispatchGroup) RevalidateBranches(r *RepoContext) {
 }
 
 // liveDispatchWorld is the production DispatchWorld backed by the on-disk
-// pool: ReadWorker via LoadLiveWorker (with dead-PID reconciliation),
+// pool: ReadWorker via a shared WorkerReader (mtime-cached LoadLiveWorker),
 // ResetWorker via Reclaim, ClaimWorker through the locked Pool, and
-// LaunchWorker through the existing launchWorker shell-out.
+// LaunchWorker through the existing launchWorker shell-out. The reader is
+// kept on the world so its cache survives across watch-loop ticks.
 type liveDispatchWorld struct {
-	r    *RepoContext
-	pool *Pool
-	opts *DispatchOpts
+	r      *RepoContext
+	pool   *Pool
+	opts   *DispatchOpts
+	reader *WorkerReader
 }
 
 func newLiveDispatchWorld(r *RepoContext, pool *Pool, opts *DispatchOpts) *liveDispatchWorld {
-	return &liveDispatchWorld{r: r, pool: pool, opts: opts}
+	return &liveDispatchWorld{r: r, pool: pool, opts: opts, reader: NewWorkerReader(r)}
 }
 
 func (w *liveDispatchWorld) ReadWorker(name string) (*WorkerState, error) {
-	h, err := LoadLiveWorker(w.r, name)
-	if err != nil {
-		return nil, err
-	}
-	return h.Status(), nil
+	return w.reader.Read(name)
 }
 
 func (w *liveDispatchWorld) ResetWorker(name string) error {
