@@ -51,12 +51,6 @@ func TestExtractSessionIDPlainText(t *testing.T) {
 	}
 }
 
-func TestVisorSocket(t *testing.T) {
-	// Just verify it doesn't panic - actual socket presence is environment-dependent
-	result := visorSocket()
-	_ = result
-}
-
 func TestResolveSession(t *testing.T) {
 	dir := t.TempDir()
 

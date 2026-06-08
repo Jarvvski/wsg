@@ -247,9 +247,9 @@ func cmdMount(args []string) {
 		fatal("Workspace directory missing: %s", wspath)
 	}
 
-	vs := visorSocket()
-	if vs == "" {
-		fatal("No kitty visor socket found. Is kitty running?")
+	v, err := openVisor()
+	if err != nil {
+		fatal("%v", err)
 	}
 
 	sessionName := ""
@@ -266,49 +266,18 @@ func cmdMount(args []string) {
 		claudeCmd = "claude; exec zsh"
 	}
 
-	// Tab 1: claude (main pane, left)
-	winID, err := run("", "kitten", "@", vs,
-		"launch", "--type=tab",
-		"--tab-title", worker,
-		"--cwd="+wspath,
-		"--", "zsh", "-ic", claudeCmd)
+	winID, err := v.NewTab(worker, wspath, claudeCmd)
 	if err != nil {
 		fatal("Failed to create kitty tab: %v", err)
 	}
 
 	if winID != "" {
-		// Pane 2: shell (right top)
-		rightID, _ := run("", "kitten", "@", vs,
-			"launch", "--match", "id:"+winID,
-			"--location=vsplit",
-			"--cwd="+wspath,
-			"--", "zsh", "-ic", "clear; exec zsh")
-
-		// Pane 3: shell (right bottom)
+		rightID, _ := v.SplitRight(winID, wspath, "clear; exec zsh")
 		if rightID != "" {
-			run("", "kitten", "@", vs,
-				"launch", "--match", "id:"+rightID,
-				"--location=hsplit",
-				"--cwd="+wspath,
-				"--", "zsh", "-ic", "clear; exec zsh")
+			v.SplitDown(rightID, wspath, "clear; exec zsh")
 		}
-
-		// Focus the claude pane
-		run("", "kitten", "@", vs, "focus-window", "--match", "id:"+winID)
+		v.Focus(winID)
 	}
 
 	info("Mounted %s in kitty", worker)
-}
-
-func visorSocket() string {
-	entries, err := os.ReadDir("/tmp")
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "kitty-visor-") {
-			return "--to=unix:/tmp/" + e.Name()
-		}
-	}
-	return ""
 }
