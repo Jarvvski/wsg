@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.3.2 - 2026-06-08
+
+### Fixed
+
+- **Dispatch failures before the agent launches now release the worker back to idle.** When `wsg dispatch <TICKET>` failed early - because `jj new`, `jj config get user.email`, or `jj config get user.name` returned an error - the worker had already been claimed (status `busy`) but no claude process was started, leaving the slot stuck until the user ran `wsg pool reset`. The pre-launch setup is now folded into `WorkerHandle.Dispatch`, and any failure inside it resets the worker to `idle` before returning the error, so the pool stays usable on transient jj hiccups.
+
 ## 0.3.1 - 2026-06-08
 
 ### Fixed

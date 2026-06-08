@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 )
@@ -122,7 +121,7 @@ func cmdDispatch(args []string) {
 	}
 	for i, worker := range workers {
 		opts.TicketID = tickets[i]
-		launchWorker(r, worker, &opts, nil)
+		launchWorker(r, worker, intentFromOpts(&opts, nil))
 	}
 }
 
@@ -145,7 +144,7 @@ func claimPartial(r *RepoContext, p *Pool, tickets []string, opts *DispatchOpts,
 		}
 		ticketOpts := *opts
 		ticketOpts.TicketID = tid
-		launchWorker(r, worker, &ticketOpts, nil)
+		launchWorker(r, worker, intentFromOpts(&ticketOpts, nil))
 		dispatched++
 	}
 	return dispatched
@@ -192,61 +191,38 @@ func dispatchAll(opts *DispatchOpts) {
 	for i, worker := range workers {
 		ticketOpts := *opts
 		ticketOpts.TicketID = tickets[i]
-		launchWorker(r, worker, &ticketOpts, nil)
+		launchWorker(r, worker, intentFromOpts(&ticketOpts, nil))
 	}
 	info("Dispatched %d ticket(s)", len(workers))
 }
 
-func launchWorker(r *RepoContext, worker string, opts *DispatchOpts, depCtx *DependencyContext) {
-	wspath := r.workerDir(worker)
-
-	if depCtx != nil && len(depCtx.BaseBranches) > 0 {
-		if err := jjNewOn(wspath, depCtx.BaseBranches...); err != nil {
-			fatal("Failed to set %s to base branches %v: %v", worker, depCtx.BaseBranches, err)
-		}
-	} else {
-		if err := jjNewOn(wspath, "main"); err != nil {
-			fatal("Failed to reset %s to main: %v", worker, err)
-		}
+// intentFromOpts builds a DispatchIntent from CLI-parsed dispatch options
+// and the per-call dependency context. The CLI's opts.TicketID is the
+// ticket for this call; depCtx is non-nil only for orchestrated stacked
+// dispatches.
+func intentFromOpts(opts *DispatchOpts, depCtx *DependencyContext) DispatchIntent {
+	return DispatchIntent{
+		Ticket:     opts.TicketID,
+		Model:      opts.Model,
+		DepCtx:     depCtx,
+		Foreground: opts.Foreground,
 	}
+}
 
-	repo := ghRepo(r)
-	ticketLower := strings.ToLower(opts.TicketID)
-
-	userEmail, err := jjConfigGet(r.Root, "user.email")
-	if err != nil {
-		fatal("Cannot read jj user.email: %v", err)
-	}
-	userName, err := jjConfigGet(r.Root, "user.name")
-	if err != nil {
-		fatal("Cannot read jj user.name: %v", err)
-	}
-	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
-
+// launchWorker is the CLI seam: load the worker handle, log, and hand the
+// intent to WorkerHandle.Dispatch. All real work lives behind Dispatch.
+func launchWorker(r *RepoContext, worker string, intent DispatchIntent) {
 	h, err := loadWorker(r, worker)
 	if err != nil {
 		fatal("Failed to open worker state: %v", err)
 	}
-
-	systemPrompt := buildDispatchSystemPrompt(repo, branchPrefix, ticketLower, depCtx)
-	prCreateCmd := ghPRCreateCmd(repo, opts.TicketID, depCtx)
-	workerPrompt := buildDispatchWorkerPrompt(opts.TicketID, userEmail, branchPrefix, ticketLower, prCreateCmd)
-
-	inv := claudeInvocation{
-		Model:        opts.Model,
-		Name:         fmt.Sprintf("pool:%s:%s", worker, opts.TicketID),
-		SystemPrompt: systemPrompt,
-		Prompt:       workerPrompt,
-	}
-
-	info("Dispatching %s to %s...", opts.TicketID, worker)
-
-	pid, err := h.Dispatch(inv, opts.Foreground)
+	info("Dispatching %s to %s...", intent.Ticket, worker)
+	pid, err := h.Dispatch(intent)
 	if err != nil {
 		fatal("Failed to start worker: %v", err)
 	}
-	if !opts.Foreground {
-		info("  %s (PID %d) -> %s", worker, pid, opts.TicketID)
+	if !intent.Foreground {
+		info("  %s (PID %d) -> %s", worker, pid, intent.Ticket)
 	}
 }
 

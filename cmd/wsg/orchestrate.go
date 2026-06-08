@@ -398,7 +398,7 @@ func (w *liveDispatchWorld) ClaimWorker(ticket string) (string, error) {
 func (w *liveDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) {
 	ticketOpts := *w.opts
 	ticketOpts.TicketID = ticket
-	launchWorker(w.r, worker, &ticketOpts, depCtx)
+	launchWorker(w.r, worker, intentFromOpts(&ticketOpts, depCtx))
 }
 
 // ── Rendering ──────────────────────────────────────────────────────
@@ -708,7 +708,7 @@ func cmdOrchestrate(args []string) {
 	if dg == nil {
 		// No sub-issues - launch the already-reserved worker.
 		opts.TicketID = parent
-		launchWorker(r, reserved, &opts, nil)
+		launchWorker(r, reserved, intentFromOpts(&opts, nil))
 		return
 	}
 

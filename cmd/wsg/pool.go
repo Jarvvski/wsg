@@ -268,15 +268,64 @@ func (h *WorkerHandle) Status() *WorkerState {
 	return h.state
 }
 
-// Dispatch launches claude in the worker's workspace. The worker must
-// already be in busy state - Pool.Claim sets the ticket/log/branch fields
-// atomically before returning the worker name, so by the time Dispatch is
-// called the state file already reflects the run. In foreground mode the
-// process runs to completion and finalises the handle; the returned pid is
-// 0. In background mode the pid is returned and the supervisor goroutine
-// finalises the handle asynchronously when the process exits.
-func (h *WorkerHandle) Dispatch(inv claudeInvocation, fg bool) (int, error) {
-	return h.launch(inv, fg)
+// DispatchIntent is the typed input to WorkerHandle.Dispatch: the ticket
+// the worker is running, the model to run it on, optional dependency
+// context for a stacked branch, and whether to run in foreground. The
+// handle owns everything else - workspace prep, identity lookup, prompt
+// build, claude launch - so dispatch.go is a pure CLI shell.
+type DispatchIntent struct {
+	Ticket     string
+	Model      string
+	DepCtx     *DependencyContext
+	Foreground bool
+}
+
+// Dispatch prepares the worker's workspace, builds the agent prompts from
+// repo identity, and launches claude. The worker must already be in busy
+// state - Pool.Claim sets the ticket/log/branch fields atomically before
+// returning the worker name. On any pre-launch failure the worker is reset
+// to idle so the slot stays usable; the returned error carries the cause.
+// In foreground mode the process runs to completion and finalises the
+// handle; the returned pid is 0. In background mode the pid is returned
+// and the supervisor goroutine finalises the handle asynchronously when
+// the process exits.
+func (h *WorkerHandle) Dispatch(intent DispatchIntent) (int, error) {
+	wspath := h.repo.workerDir(h.worker)
+
+	baseRevs := []string{"main"}
+	if intent.DepCtx != nil && len(intent.DepCtx.BaseBranches) > 0 {
+		baseRevs = intent.DepCtx.BaseBranches
+	}
+	if err := jjNewOn(wspath, baseRevs...); err != nil {
+		h.reset()
+		return 0, fmt.Errorf("set %s to %v: %w", h.worker, baseRevs, err)
+	}
+
+	userEmail, err := jjConfigGet(h.repo.Root, "user.email")
+	if err != nil {
+		h.reset()
+		return 0, fmt.Errorf("read jj user.email: %w", err)
+	}
+	userName, err := jjConfigGet(h.repo.Root, "user.name")
+	if err != nil {
+		h.reset()
+		return 0, fmt.Errorf("read jj user.name: %w", err)
+	}
+	branchPrefix := strings.ToLower(strings.Fields(userName)[0])
+
+	repo := ghRepo(h.repo)
+	ticketLower := strings.ToLower(intent.Ticket)
+	systemPrompt := buildDispatchSystemPrompt(repo, branchPrefix, ticketLower, intent.DepCtx)
+	prCreateCmd := ghPRCreateCmd(repo, intent.Ticket, intent.DepCtx)
+	workerPrompt := buildDispatchWorkerPrompt(intent.Ticket, userEmail, branchPrefix, ticketLower, prCreateCmd)
+
+	inv := claudeInvocation{
+		Model:        intent.Model,
+		Name:         fmt.Sprintf("pool:%s:%s", h.worker, intent.Ticket),
+		SystemPrompt: systemPrompt,
+		Prompt:       workerPrompt,
+	}
+	return h.launch(inv, intent.Foreground)
 }
 
 // Resume marks a non-busy worker busy on a fresh log file and launches
