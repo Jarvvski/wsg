@@ -396,7 +396,9 @@ func (w *liveDispatchWorld) ClaimWorker(ticket string) (string, error) {
 func (w *liveDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) {
 	ticketOpts := *w.opts
 	ticketOpts.TicketID = ticket
-	launchWorker(w.r, worker, intentFromOpts(&ticketOpts, depCtx))
+	if _, err := launchWorker(w.r, worker, intentFromOpts(&ticketOpts, depCtx)); err != nil {
+		info("  warning: launch %s failed: %v", ticket, err)
+	}
 }
 
 // ── Rendering ──────────────────────────────────────────────────────
@@ -613,22 +615,6 @@ func ptrOr(p *string, fallback string) string {
 	return fallback
 }
 
-// ── Orchestration entry point ─────────────────────────────────────
-
-func tryOrchestrate(r *RepoContext, ticket string, opts *DispatchOpts) {
-	if dg := LoadLiveDispatchGroup(r, ticket); dg != nil {
-		dg.PrintStatus()
-		if dg.Terminal() {
-			done, failed, skipped := dg.CountStatuses()
-			info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
-		} else {
-			spawnOrchestratorCLI(r, ticket, opts)
-		}
-		return
-	}
-	spawnOrchestratorCLI(r, ticket, opts)
-}
-
 // ── Background orchestration ───────────────────────────────────────
 
 func spawnOrchestrator(r *RepoContext, parent string, opts *DispatchOpts) error {
@@ -636,16 +622,6 @@ func spawnOrchestrator(r *RepoContext, parent string, opts *DispatchOpts) error 
 	_, err := startBackground(r.Root, logFile, "wsg", "__orchestrate", parent,
 		"--model", opts.Model)
 	return err
-}
-
-func spawnOrchestratorCLI(r *RepoContext, parent string, opts *DispatchOpts) {
-	if err := spawnOrchestrator(r, parent, opts); err != nil {
-		fatal("Failed to start orchestrator: %v", err)
-	}
-	logFile := filepath.Join(r.poolDir(), "dispatch-"+strings.ToLower(parent)+".log")
-	info("Orchestrating %s in background", parent)
-	info("  Log: %s", logFile)
-	info("  Re-run 'wsg dispatch %s' to check progress", parent)
 }
 
 func cmdOrchestrate(args []string) {
@@ -706,7 +682,9 @@ func cmdOrchestrate(args []string) {
 	if dg == nil {
 		// No sub-issues - launch the already-reserved worker.
 		opts.TicketID = parent
-		launchWorker(r, reserved, intentFromOpts(&opts, nil))
+		if _, err := launchWorker(r, reserved, intentFromOpts(&opts, nil)); err != nil {
+			fatal("Failed to start worker: %v", err)
+		}
 		return
 	}
 

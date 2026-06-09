@@ -637,63 +637,19 @@ func (m tuiModel) doSend(workerName, prompt string) tea.Cmd {
 func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		ensurePoolCapacityForBatch(repo, tickets)
-
-		dispatched := 0
-		for _, ticket := range tickets {
-			opts := &DispatchOpts{
-				TicketID: ticket,
-				Model:    "opus",
-			}
-			if dg := LoadLiveDispatchGroup(repo, ticket); dg != nil {
-				if !dg.Terminal() {
-					if err := spawnOrchestrator(repo, ticket, opts); err != nil {
-						return batchDispatchResultMsg{err: fmt.Errorf("orchestrate %s: %v", ticket, err)}
-					}
-				}
-				dispatched++
-				continue
-			}
-			if err := spawnOrchestrator(repo, ticket, opts); err != nil {
-				return batchDispatchResultMsg{err: fmt.Errorf("orchestrate %s: %v", ticket, err)}
-			}
-			dispatched++
+		opts := DispatchOpts{
+			Model:           "opus",
+			OrchestrateEach: true,
+		}
+		res, err := NewActions(repo).Dispatch(tickets, opts)
+		if err != nil {
+			return batchDispatchResultMsg{err: err}
 		}
 		return batchDispatchResultMsg{
 			tickets:    tickets,
-			dispatched: dispatched,
+			dispatched: len(res.Outcomes),
 		}
 	}
-}
-
-// ensurePoolCapacityForBatch grows the pool up front so concurrent
-// orchestrators each find at least one idle worker without contending on a
-// resize. With Pool.Resize now serialised against Claim/Remove via the pool
-// lock, the pre-grow is no longer a race fix - just an early signal so the
-// "no idle workers" branch isn't the first thing each orchestrator hits.
-// Counts only tickets that will actually dispatch (skips groups already in
-// a terminal state).
-func ensurePoolCapacityForBatch(r *RepoContext, tickets []string) {
-	p, err := OpenPool(r)
-	if err != nil {
-		return
-	}
-	need := 0
-	for _, ticket := range tickets {
-		if dg := LoadLiveDispatchGroup(r, ticket); dg != nil && dg.Terminal() {
-			continue
-		}
-		need++
-	}
-	if need == 0 {
-		return
-	}
-	snap := p.Snapshot()
-	if snap.Idle >= need {
-		return
-	}
-	newSize := snap.Size + (need - snap.Idle)
-	p.Resize(newSize)
 }
 
 func (m tuiModel) doFetchAll() tea.Cmd {
@@ -710,28 +666,26 @@ func (m tuiModel) doFetchAll() tea.Cmd {
 func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		opts := &DispatchOpts{
-			TicketID: ticket,
-			Model:    "opus",
+		opts := DispatchOpts{Model: "opus"}
+		res, err := NewActions(repo).Dispatch([]string{ticket}, opts)
+		if err != nil {
+			return dispatchResultMsg{ticket: ticket, err: err}
 		}
-
-		if dg := LoadLiveDispatchGroup(repo, ticket); dg != nil {
-			if !dg.Terminal() {
-				if err := spawnOrchestrator(repo, ticket, opts); err != nil {
-					return dispatchResultMsg{ticket: ticket, err: err}
-				}
-			}
+		if len(res.Outcomes) == 0 {
+			return dispatchResultMsg{ticket: ticket, err: fmt.Errorf("no outcome for %s", ticket)}
+		}
+		out := res.Outcomes[0]
+		if out.Orchestrated && out.Group != nil {
 			return dispatchResultMsg{
 				ticket:        ticket,
 				orchestrated:  true,
-				subIssueCount: len(dg.SubIssues),
+				subIssueCount: len(out.Group.SubIssues),
 			}
 		}
-
-		if err := spawnOrchestrator(repo, ticket, opts); err != nil {
-			return dispatchResultMsg{ticket: ticket, err: err}
+		if out.Orchestrated {
+			return dispatchResultMsg{ticket: ticket, backgrounded: true}
 		}
-		return dispatchResultMsg{ticket: ticket, backgrounded: true}
+		return dispatchResultMsg{ticket: ticket, worker: out.Worker}
 	}
 }
 

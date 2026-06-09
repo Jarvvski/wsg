@@ -1,8 +1,9 @@
 package main
 
 import (
-	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -37,9 +38,20 @@ type DispatchOpts struct {
 	TicketID      string
 	Foreground    bool
 	Model         string
-	AllMode       bool
 	Label         string
 	NoOrchestrate bool
+
+	// OnPoolFull, if non-nil, decides whether to grow the pool when a
+	// reservation finds fewer idle workers than needed. Returning true grows
+	// the pool to fit; false claims only what currently fits (partial). Nil
+	// means "always grow" - the TUI default. The CLI plumbs `confirm` here.
+	OnPoolFull func(have, need int) bool
+
+	// OrchestrateEach, when true, spawns one orchestrator subprocess per
+	// ticket in a batch (TUI batch behavior). When false, batches go through
+	// atomic Reserve + direct launch (CLI batch behavior). Ignored when
+	// NoOrchestrate is set.
+	OrchestrateEach bool
 }
 
 func cmdDispatch(args []string) {
@@ -50,6 +62,7 @@ func cmdDispatch(args []string) {
 
 	var tickets []string
 	var fgFlag *bool
+	var allMode bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--fg":
@@ -64,7 +77,7 @@ func cmdDispatch(args []string) {
 				i++
 			}
 		case "--all":
-			opts.AllMode = true
+			allMode = true
 		case "--no-orchestrate":
 			opts.NoOrchestrate = true
 		case "--label":
@@ -85,9 +98,26 @@ func cmdDispatch(args []string) {
 	}
 
 	opts.Foreground = resolveForeground(r, fgFlag)
+	opts.OnPoolFull = cliConfirmGrow
 
-	if opts.AllMode {
-		dispatchAll(&opts)
+	actions := NewActions(r)
+
+	if allMode {
+		info("Fetching tickets with label '%s'...", opts.Label)
+		// --all has historically been bulk-only (no per-ticket orchestrator
+		// even if only one ticket matches). Pin that here so changing the
+		// verb's defaults can't drift the CLI surface.
+		allOpts := opts
+		allOpts.NoOrchestrate = true
+		fetched, res, err := actions.DispatchAll(allOpts)
+		if err != nil {
+			fatal("DispatchAll: %v", err)
+		}
+		if len(fetched) == 0 {
+			info("No tickets found with label '%s'", opts.Label)
+			return
+		}
+		renderCLIDispatch(r, res, len(fetched), true)
 		return
 	}
 
@@ -95,105 +125,65 @@ func cmdDispatch(args []string) {
 		fatal("Usage: wsg dispatch <TICKET>... [--fg|--bg] [--model MODEL]")
 	}
 
-	p, err := OpenPool(r)
+	res, err := actions.Dispatch(tickets, opts)
 	if err != nil {
-		fatal("No pool. Run: wsg pool create --size N")
+		fatal("Dispatch: %v", err)
 	}
+	renderCLIDispatch(r, res, len(tickets), false)
+}
 
-	if len(tickets) == 1 && !opts.NoOrchestrate {
-		tryOrchestrate(r, tickets[0], &opts)
+// cliConfirmGrow is the OnPoolFull callback the CLI plumbs into the verb:
+// it asks the user interactively whether to grow the pool to fit. The TUI
+// passes nil instead and always grows.
+func cliConfirmGrow(have, need int) bool {
+	newSize := have + need
+	return confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", have, need, newSize)
+}
+
+// renderCLIDispatch prints the per-outcome CLI status lines and the
+// orchestration tables/summaries. The verb returns data; this is where
+// "dispatched X to Y", "Orchestrating ... in background", and the
+// PrintStatus tables live.
+func renderCLIDispatch(r *RepoContext, res DispatchResult, requested int, all bool) {
+	for _, o := range res.Outcomes {
+		if o.Orchestrated {
+			renderOrchestratedOutcome(r, o)
+			continue
+		}
+		// Foreground launch returns PID 0 after WaitFinal; the original
+		// CLI suppressed the line entirely in that case so the user sees
+		// claude's terminal output, not a bogus "PID 0" trailer.
+		if o.PID == 0 {
+			continue
+		}
+		info("  %s (PID %d) -> %s", o.Worker, o.PID, o.Ticket)
+	}
+	dispatched := len(res.Outcomes)
+	if res.Partial {
+		if dispatched == 0 && !all {
+			fatal("No idle workers. Run: wsg pool list")
+		}
+		info("No more idle workers. Dispatched %d/%d ticket(s).", dispatched, requested)
 		return
 	}
-
-	workers, err := p.Reserve(tickets)
-	var pf *PoolFull
-	if errors.As(err, &pf) {
-		newSize := p.Config().Size + pf.Gap()
-		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", pf.Have, pf.Need, newSize) {
-			workers, err = p.GrowAndReserve(tickets)
-		} else {
-			claimPartial(r, p, tickets, &opts, true)
-			return
-		}
-	}
-	if err != nil {
-		fatal("Reserve: %v", err)
-	}
-	for i, worker := range workers {
-		opts.TicketID = tickets[i]
-		launchWorker(r, worker, intentFromOpts(&opts, nil))
+	if all {
+		info("Dispatched %d ticket(s)", dispatched)
 	}
 }
 
-// claimPartial walks tickets and claims one worker per ticket through
-// the locked Pool, stopping at the first shortage. Used when the user
-// declines an upfront resize: we still try to dispatch as many tickets
-// as currently fit. fatalOnZero is true for the interactive dispatch
-// path (no idle = fatal) and false for the batch path where partial
-// progress is the norm.
-func claimPartial(r *RepoContext, p *Pool, tickets []string, opts *DispatchOpts, fatalOnZero bool) int {
-	dispatched := 0
-	for _, tid := range tickets {
-		worker, err := p.Claim(tid)
-		if err != nil {
-			if dispatched == 0 && fatalOnZero {
-				fatal("No idle workers. Run: wsg pool list")
-			}
-			info("No more idle workers. Dispatched %d/%d ticket(s).", dispatched, len(tickets))
-			return dispatched
-		}
-		ticketOpts := *opts
-		ticketOpts.TicketID = tid
-		launchWorker(r, worker, intentFromOpts(&ticketOpts, nil))
-		dispatched++
-	}
-	return dispatched
-}
-
-func dispatchAll(opts *DispatchOpts) {
-	r, err := newRepoContext()
-	if err != nil {
-		fatal("Not in a jj repo")
-	}
-
-	p, err := OpenPool(r)
-	if err != nil {
-		fatal("No pool. Run: wsg pool create --size N")
-	}
-
-	info("Fetching tickets with label '%s'...", opts.Label)
-
-	tickets, err := linearReadyTickets(r, opts.Label)
-	if err != nil {
-		fatal("Failed to fetch tickets: %v", err)
-	}
-
-	if len(tickets) == 0 {
-		info("No tickets found with label '%s'", opts.Label)
-		return
-	}
-
-	workers, err := p.Reserve(tickets)
-	var pf *PoolFull
-	if errors.As(err, &pf) {
-		newSize := p.Config().Size + pf.Gap()
-		if confirm("Pool has %d idle worker(s) but %d ticket(s) to dispatch. Resize pool to %d?", pf.Have, pf.Need, newSize) {
-			workers, err = p.GrowAndReserve(tickets)
-		} else {
-			count := claimPartial(r, p, tickets, opts, false)
-			info("Dispatched %d ticket(s)", count)
+func renderOrchestratedOutcome(r *RepoContext, o TicketOutcome) {
+	if o.Group != nil {
+		o.Group.PrintStatus()
+		if o.Group.Terminal() {
+			done, failed, skipped := o.Group.CountStatuses()
+			info("Orchestration complete: %d done, %d failed, %d skipped", done, failed, skipped)
 			return
 		}
 	}
-	if err != nil {
-		fatal("Reserve: %v", err)
-	}
-	for i, worker := range workers {
-		ticketOpts := *opts
-		ticketOpts.TicketID = tickets[i]
-		launchWorker(r, worker, intentFromOpts(&ticketOpts, nil))
-	}
-	info("Dispatched %d ticket(s)", len(workers))
+	logFile := filepath.Join(r.poolDir(), "dispatch-"+strings.ToLower(o.Ticket)+".log")
+	info("Orchestrating %s in background", o.Ticket)
+	info("  Log: %s", logFile)
+	info("  Re-run 'wsg dispatch %s' to check progress", o.Ticket)
 }
 
 // intentFromOpts builds a DispatchIntent from CLI-parsed dispatch options
@@ -209,21 +199,20 @@ func intentFromOpts(opts *DispatchOpts, depCtx *DependencyContext) DispatchInten
 	}
 }
 
-// launchWorker is the CLI seam: load the worker handle, log, and hand the
-// intent to WorkerHandle.Dispatch. All real work lives behind Dispatch.
-func launchWorker(r *RepoContext, worker string, intent DispatchIntent) {
+// launchWorker loads the handle for worker and hands intent to
+// WorkerHandle.Dispatch. Returns the launched PID for caller-side
+// logging. No prints, no fatal - the CLI shell and the action both call
+// this and decide how to render success or surface errors.
+func launchWorker(r *RepoContext, worker string, intent DispatchIntent) (int, error) {
 	h, err := loadWorker(r, worker)
 	if err != nil {
-		fatal("Failed to open worker state: %v", err)
+		return 0, fmt.Errorf("open worker state: %w", err)
 	}
-	info("Dispatching %s to %s...", intent.Ticket, worker)
 	pid, err := h.Dispatch(intent)
 	if err != nil {
-		fatal("Failed to start worker: %v", err)
+		return 0, fmt.Errorf("start worker: %w", err)
 	}
-	if !intent.Foreground {
-		info("  %s (PID %d) -> %s", worker, pid, intent.Ticket)
-	}
+	return pid, nil
 }
 
 func cmdLogs(args []string) {

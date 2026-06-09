@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.4.0 - 2026-06-09
+
+### Changed
+
+- **`wsg dispatch` no longer prints a `Dispatching <ticket> to <worker>...` preamble before each launch.** Multi-ticket and `--all` runs now emit only the trailing `  worker-X (PID Y) -> ticket` summary per launched worker - the pre-print carried the same information and made batches twice as noisy. Foreground dispatches (`--fg`) similarly drop the redundant trailing PID line. The change rides a refactor that promotes dispatch into a shared `Dispatch` / `DispatchAll` verb on `WorkerActions`: the CLI shell and the TUI's `tea.Cmd` closures now both route through one entry point, so the orchestrate-vs-reserve decision and the pool-full resize prompt live in one place rather than being duplicated across `cmdDispatch`, `dispatchAll`, and `doDispatch* / doFetchAll`.
+
 ## 0.3.4 - 2026-06-09
 
 ### Fixed
