@@ -541,26 +541,6 @@ func resolveExistingBranch(r *RepoContext, ticketID string) *string {
 	return jjResolveBranchForTicket(r.Root, strings.ToLower(ticketID))
 }
 
-func extractJSON(s string) string {
-	start := strings.Index(s, "{")
-	if start == -1 {
-		return s
-	}
-	depth := 0
-	for i := start; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return s[start:]
-}
-
 // ── Orchestrated dispatch ──────────────────────────────────────────
 
 func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {

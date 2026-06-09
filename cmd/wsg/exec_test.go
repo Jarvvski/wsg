@@ -128,43 +128,6 @@ func awaitTerminal(t *testing.T, sf string) *WorkerState {
 	return nil
 }
 
-func TestUnwrapClaudeJSON(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "direct JSON",
-			input: `{"tickets": ["AMBA-1"]}`,
-			want:  `{"tickets": ["AMBA-1"]}`,
-		},
-		{
-			name:  "wrapped in result",
-			input: `{"result": "{\"tickets\": [\"AMBA-42\"]}"}`,
-			want:  `{"tickets": ["AMBA-42"]}`,
-		},
-		{
-			name:  "result with markdown",
-			input: `{"result": "Here is the result:\n{\"key\": \"value\"}"}`,
-			want:  `{"key": "value"}`,
-		},
-		{
-			name:  "plain text",
-			input: `not json`,
-			want:  `not json`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := unwrapClaudeJSON(tt.input)
-			if got != tt.want {
-				t.Errorf("unwrapClaudeJSON(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
 		input string
