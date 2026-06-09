@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.4.1 - 2026-06-09
+
+### Fixed
+
+- **`wsg list` and shell completion now reflect workspaces added or removed by `jj` outside wsg.** `cacheGet` previously trusted the on-disk `ws-cache` whenever the file existed, so an external `jj workspace add foo` (or `jj workspace forget`) left the cache stale until the user ran `wsg refresh` - completion offered missing workspaces and hid new ones. `cacheGet` now compares the cache's mtime against `.jj/repo/op_heads/heads` and rebuilds when jj's op log has advanced, so the next `wsg list` / `wsg path` / tab-complete picks up the change automatically.
+
 ## 0.4.0 - 2026-06-09
 
 ### Changed

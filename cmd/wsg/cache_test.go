@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCacheRead(t *testing.T) {
@@ -117,5 +118,56 @@ func TestCacheWriteRoundTrip(t *testing.T) {
 	want := "default\t/repo\nworker-1\t/ws/worker-1\nworker-2\t/ws/worker-2\n"
 	if string(raw) != want {
 		t.Errorf("raw file:\ngot:  %q\nwant: %q", string(raw), want)
+	}
+}
+
+func TestCacheStale(t *testing.T) {
+	dir := t.TempDir()
+	opDir := filepath.Join(dir, ".jj", "repo", "op_heads", "heads")
+	if err := os.MkdirAll(opDir, 0755); err != nil {
+		t.Fatalf("seed op dir: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+
+	if err := cacheWrite(r.cacheFile(), []CacheEntry{{Name: "default", Path: dir}}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(opDir, past, past); err != nil {
+		t.Fatalf("backdate op dir: %v", err)
+	}
+	if cacheStale(r) {
+		t.Errorf("cache should be fresh when op dir is older")
+	}
+
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(opDir, future, future); err != nil {
+		t.Fatalf("forward op dir: %v", err)
+	}
+	if !cacheStale(r) {
+		t.Errorf("cache should be stale when op dir is newer")
+	}
+}
+
+func TestCacheStaleMissingOpDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".jj"), 0755); err != nil {
+		t.Fatalf("seed .jj: %v", err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	if err := cacheWrite(r.cacheFile(), []CacheEntry{{Name: "default", Path: dir}}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if cacheStale(r) {
+		t.Errorf("missing op dir should be treated as fresh, not stale")
+	}
+}
+
+func TestCacheStaleMissingCache(t *testing.T) {
+	dir := t.TempDir()
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	if cacheStale(r) {
+		t.Errorf("missing cache file should not be reported stale by cacheStale")
 	}
 }

@@ -6,7 +6,7 @@ import "fmt"
 //   - PATCH for bug fixes (CHANGELOG: ### Fixed only)
 //   - MINOR for everything else (### Added / ### Changed / ### Removed)
 //   - MAJOR (1.0.0+) only with explicit owner approval - never auto-bump
-const Version = "0.4.0"
+const Version = "0.4.1"
 
 func cmdVersion() {
 	fmt.Printf("wsg %s\n", Version)

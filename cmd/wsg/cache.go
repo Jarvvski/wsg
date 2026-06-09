@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -78,8 +79,28 @@ func cacheGet(r *RepoContext) ([]CacheEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if entries != nil {
-		return entries, nil
+	if entries == nil || cacheStale(r) {
+		return cacheRebuild(r)
 	}
-	return cacheRebuild(r)
+	return entries, nil
+}
+
+// cacheStale reports whether jj's operation log has advanced since the
+// cache was last written - the signal that an external `jj workspace add`
+// or `jj workspace forget` may have changed the workspace set. The
+// op-heads directory is touched on every jj operation, so this also
+// triggers a rebuild after ordinary jj activity; rebuilds are cheap
+// (one `jj workspace list`) and this keeps the check layout-light.
+// Returns false on any error reading either side: if we can't inspect
+// jj's state we trust the cache rather than thrashing.
+func cacheStale(r *RepoContext) bool {
+	cacheInfo, err := os.Stat(r.cacheFile())
+	if err != nil {
+		return false
+	}
+	opInfo, err := os.Stat(filepath.Join(r.Root, ".jj", "repo", "op_heads", "heads"))
+	if err != nil {
+		return false
+	}
+	return opInfo.ModTime().After(cacheInfo.ModTime())
 }
