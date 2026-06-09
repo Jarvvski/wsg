@@ -360,23 +360,26 @@ func TestSummarizeInput(t *testing.T) {
 	defer func() { isTTY = origTTY }()
 
 	tests := []struct {
-		name  string
-		input any
-		want  string
+		name   string
+		input  any
+		maxLen int
+		want   string
 	}{
-		{"nil", nil, ""},
-		{"command", map[string]any{"command": "git status"}, " git status"},
-		{"file_path", map[string]any{"file_path": "/foo/bar.go"}, " /foo/bar.go"},
-		{"pattern", map[string]any{"pattern": "*.go"}, " *.go"},
-		{"description", map[string]any{"description": "Explore code"}, " Explore code"},
-		{"query", map[string]any{"query": "search term"}, " search term"},
-		{"unknown", map[string]any{"other": "val"}, ""},
-		{"long command", map[string]any{"command": "a very long command that exceeds eighty characters in total length and should be truncated for display purposes"}, " a very long command that exceeds eighty characters in total length and should..."},
-		{"long query", map[string]any{"query": "a very long query that exceeds eighty characters in total length and should be truncated for display purposes in logs"}, " a very long query that exceeds eighty characters in total length and should b..."},
+		{"nil", nil, 80, ""},
+		{"command", map[string]any{"command": "git status"}, 80, " git status"},
+		{"file_path", map[string]any{"file_path": "/foo/bar.go"}, 80, " /foo/bar.go"},
+		{"pattern", map[string]any{"pattern": "*.go"}, 80, " *.go"},
+		{"description", map[string]any{"description": "Explore code"}, 80, " Explore code"},
+		{"query", map[string]any{"query": "search term"}, 80, " search term"},
+		{"unknown", map[string]any{"other": "val"}, 80, ""},
+		{"long command", map[string]any{"command": "a very long command that exceeds eighty characters in total length and should be truncated for display purposes"}, 80, " a very long command that exceeds eighty characters in total length and should..."},
+		{"long query", map[string]any{"query": "a very long query that exceeds eighty characters in total length and should be truncated for display purposes in logs"}, 80, " a very long query that exceeds eighty characters in total length and should b..."},
+		{"long command untruncated", map[string]any{"command": "a very long command that exceeds eighty characters in total length and should be truncated for display purposes"}, 0, " a very long command that exceeds eighty characters in total length and should be truncated for display purposes"},
+		{"long query untruncated", map[string]any{"query": "a very long query that exceeds eighty characters in total length and should be truncated for display purposes in logs"}, 0, " a very long query that exceeds eighty characters in total length and should be truncated for display purposes in logs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := summarizeInput(tt.input)
+			got := summarizeInput(tt.input, tt.maxLen)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}

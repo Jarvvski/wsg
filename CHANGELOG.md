@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.3.4 - 2026-06-09
+
+### Fixed
+
+- **Tail-mode tool-call lines no longer truncate at 80 characters.** In the TUI tail view, assistant text wrapped naturally at the viewport width while `Bash` and `WebSearch` tool-call summaries were still being clipped to 80 chars with a trailing `...`, even though the viewport has `SoftWrap` on - so long shell commands and search queries disappeared past the cliff. The 80-char cap on `command`/`query` fields is now opt-in via a `maxLen` parameter; the streaming print path still passes 80 to keep one event on one line, but the tail formatter passes 0 and lets the viewport wrap the full string.
+
 ## 0.3.3 - 2026-06-08
 
 ### Fixed

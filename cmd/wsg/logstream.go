@@ -152,7 +152,7 @@ func formatEvent(line string, state *logState) {
 					fmt.Println(c.Text)
 				}
 			case "tool_use":
-				input := summarizeInput(c.Input)
+				input := summarizeInput(c.Input, 80)
 				ctx := contextBadge(state.contextTokens)
 				depth := len(state.agentStack)
 				var prefix string
@@ -257,7 +257,7 @@ func treeClose(depth int) string {
 	return b.String()
 }
 
-func summarizeInput(input any) string {
+func summarizeInput(input any, maxLen int) string {
 	if input == nil {
 		return ""
 	}
@@ -265,13 +265,15 @@ func summarizeInput(input any) string {
 	if !ok {
 		return ""
 	}
+	truncate := func(s string) string {
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen-3] + "..."
+		}
+		return s
+	}
 	// Show the most useful field for common tools
 	if cmd, ok := m["command"].(string); ok {
-		short := cmd
-		if len(short) > 80 {
-			short = short[:77] + "..."
-		}
-		return " " + colorize(short, colorDim)
+		return " " + colorize(truncate(cmd), colorDim)
 	}
 	if fp, ok := m["file_path"].(string); ok {
 		return " " + colorize(fp, colorDim)
@@ -283,11 +285,7 @@ func summarizeInput(input any) string {
 		return " " + colorize(pattern, colorDim)
 	}
 	if query, ok := m["query"].(string); ok {
-		short := query
-		if len(short) > 80 {
-			short = short[:77] + "..."
-		}
-		return " " + colorize(short, colorDim)
+		return " " + colorize(truncate(query), colorDim)
 	}
 	return ""
 }
@@ -459,7 +457,7 @@ func formatEventToString(line string, state *logState) string {
 					parts = append(parts, c.Text)
 				}
 			case "tool_use":
-				input := summarizeInput(c.Input)
+				input := summarizeInput(c.Input, 0)
 				parts = append(parts, colorize(c.Name, colorYellow)+input)
 			}
 		}
