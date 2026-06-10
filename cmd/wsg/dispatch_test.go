@@ -38,6 +38,9 @@ func TestClaudeArgsDispatch(t *testing.T) {
 	if !slices.Contains(args, "--verbose") {
 		t.Error("missing --verbose")
 	}
+	if idx := slices.Index(args, "--settings"); idx == -1 || !strings.Contains(args[idx+1], `"defaultMode":"auto"`) {
+		t.Error("dispatch should enable auto mode via --settings")
+	}
 	if args[len(args)-1] != "implement the thing" {
 		t.Errorf("last arg = %q, want prompt", args[len(args)-1])
 	}

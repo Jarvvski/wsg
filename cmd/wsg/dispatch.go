@@ -24,6 +24,10 @@ func (c *claudeInvocation) Args() []string {
 		args = append(args, "--resume", c.SessionID, "--fork-session")
 	}
 	args = append(args, "--output-format", "stream-json", "--verbose")
+	// Auto mode: bias toward acting without pausing for clarifying
+	// questions. --permission-mode does not accept "auto", but the
+	// equivalent settings.permissions.defaultMode does.
+	args = append(args, "--settings", `{"permissions":{"defaultMode":"auto"}}`)
 	if c.Name != "" {
 		args = append(args, "--name", c.Name)
 	}

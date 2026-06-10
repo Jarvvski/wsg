@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.5.0 - 2026-06-10
+
+### Changed
+
+- **`wsg dispatch` now launches claude workers in auto mode.** The worker invocation passes `--settings '{"permissions":{"defaultMode":"auto"}}'` so the dispatched agent biases toward acting on the ticket without pausing for clarifying questions - matching how the user already runs interactive sessions and removing the case where a worker would stall waiting for input it cannot receive. Resumed sends (`--resume`) get the same flag.
+
 ## 0.4.1 - 2026-06-09
 
 ### Fixed
