@@ -144,6 +144,42 @@ func (a *WorkerActions) Dispatch(tickets []string, opts DispatchOpts) (DispatchR
 	return a.dispatchBulk(tickets, opts)
 }
 
+// DispatchTo dispatches a single ticket to one named worker, bypassing the
+// first-idle Reserve order. The worker must currently be idle. This is the
+// verb behind the TUI's [n] dispatch-to-selected: because the user has
+// chosen the exact slot, the launch is always direct (no orchestrator - the
+// orchestrator picks its own workers, which would defeat targeting). A
+// ReserveWorker error writes no state; a launch error leaves the slot idle
+// because WorkerHandle.Dispatch resets it on any pre-launch failure.
+func (a *WorkerActions) DispatchTo(worker, ticket string, opts DispatchOpts) (TicketOutcome, error) {
+	p, err := OpenPool(a.repo)
+	if err != nil {
+		return TicketOutcome{}, fmt.Errorf("no pool: %w", err)
+	}
+	if err := p.ReserveWorker(worker, ticket); err != nil {
+		return TicketOutcome{}, err
+	}
+	ticketOpts := opts
+	ticketOpts.TicketID = ticket
+	pid, err := launchWorker(a.repo, worker, intentFromOpts(&ticketOpts, nil))
+	if err != nil {
+		return TicketOutcome{}, fmt.Errorf("launch %s: %w", ticket, err)
+	}
+	return TicketOutcome{Ticket: ticket, Worker: worker, PID: pid}, nil
+}
+
+// Rename sets (or, with an empty name, clears) the worker's display alias.
+// Cosmetic only - stored in pool.json, never touching the workspace or jj
+// workspace name - so a long-lived personal worker keeps its label across
+// the reset / redispatch cycle that wipes worker state.
+func (a *WorkerActions) Rename(worker, name string) error {
+	p, err := OpenPool(a.repo)
+	if err != nil {
+		return err
+	}
+	return p.SetName(worker, name)
+}
+
 // DispatchAll fetches ready tickets from Linear with opts.Label and routes
 // them through Dispatch. Returns the fetched ticket IDs alongside the result
 // so callers can render "found N" before checking how many actually went

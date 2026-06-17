@@ -27,6 +27,7 @@ const (
 	viewTail
 	viewInput
 	viewDispatch
+	viewRename
 )
 
 // defaultStatus is the keybinding legend painted at the bottom of the list
@@ -39,8 +40,10 @@ func buildDefaultStatus() string {
 	chunks := []struct {
 		label, color string
 	}{
-		{"[n]ew", colorYellow},
-		{"[N]all", colorYellow},
+		{"[n]sel", colorYellow},
+		{"[N]idle", colorYellow},
+		{"[A]ll", colorYellow},
+		{"[a]name", colorDim},
 		{"[f]ollow", colorDim},
 		{"[s]end", colorYellow},
 		{"[r]eview", colorYellow},
@@ -59,8 +62,19 @@ func buildDefaultStatus() string {
 
 type tuiWorker struct {
 	name         string
+	alias        string
 	state        *WorkerState
 	lastActivity string
+}
+
+// label is the worker's display alias if it has one, else the short id
+// (the "worker-" prefix stripped). Used wherever a single human-facing name
+// for the worker is wanted - status messages, the dispatch/rename prompts.
+func (w tuiWorker) label() string {
+	if w.alias != "" {
+		return w.alias
+	}
+	return displayWorker(w.name)
 }
 
 type tuiModel struct {
@@ -82,12 +96,15 @@ type tuiModel struct {
 	tailViewport  viewport.Model
 	tailFollowing bool
 
-	// input view state
-	inputWorker string
-	textArea    textarea.Model
+	// input view state (shared by [s]end and [a]name)
+	inputWorker  string
+	renameWorker string
+	textArea     textarea.Model
 
-	// dispatch view state
-	dispatchArea textarea.Model
+	// dispatch view state. dispatchWorker is the target slot for [n]
+	// (dispatch-to-selected); empty means the [N] any-idle path.
+	dispatchArea   textarea.Model
+	dispatchWorker string
 }
 
 func runTUI(r *RepoContext) {
@@ -144,6 +161,7 @@ func (m *tuiModel) loadWorkers() {
 		}
 		workers = append(workers, tuiWorker{
 			name:         name,
+			alias:        p.Name(name),
 			state:        v.State,
 			lastActivity: activity,
 		})
@@ -162,7 +180,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.PasteMsg:
 		switch m.view {
-		case viewInput:
+		case viewInput, viewRename:
 			var cmd tea.Cmd
 			m.textArea, cmd = m.textArea.Update(msg)
 			return m, cmd
@@ -181,6 +199,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInput(msg)
 		case viewDispatch:
 			return m.updateDispatch(msg)
+		case viewRename:
+			return m.updateRename(msg)
 		}
 	case tickMsg:
 		m.loadWorkers()
@@ -383,23 +403,44 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = "Enter to send, Shift+Enter for newline, Esc to cancel"
 		return m, ta.Focus()
 	case "n":
-		m.view = viewDispatch
-		ta := textarea.New()
-		ta.Placeholder = "AMBA-42 AMBA-43 ..."
-		ta.Focus()
-		styleTextArea(&ta)
-		ta.SetHeight(1)
-		if m.width > 0 {
-			ta.SetWidth(m.width - 4)
-		} else {
-			ta.SetWidth(76)
+		w := m.selectedWorker()
+		if w == nil {
+			return m, nil
 		}
-		m.dispatchArea = ta
-		m.status = "Ticket ID(s) separated by spaces, Enter to dispatch, Esc to cancel"
-		return m, ta.Focus()
+		if w.state.Status != WorkerStatusIdle {
+			if w.state.Status.IsActive() {
+				m.status = "Cannot dispatch: worker is busy"
+			} else {
+				m.status = fmt.Sprintf("Worker is %s - [d]ismiss it first to dispatch", w.state.Status)
+			}
+			return m, nil
+		}
+		m.view = viewDispatch
+		m.dispatchWorker = w.name
+		m.dispatchArea = m.newTextArea("AMBA-42", 1)
+		m.status = fmt.Sprintf("Ticket for %s, Enter to dispatch, Esc to cancel", w.label())
+		return m, m.dispatchArea.Focus()
 	case "N":
+		m.view = viewDispatch
+		m.dispatchWorker = ""
+		m.dispatchArea = m.newTextArea("AMBA-42 AMBA-43 ...", 1)
+		m.status = "Ticket ID(s) for any idle worker, Enter to dispatch, Esc to cancel"
+		return m, m.dispatchArea.Focus()
+	case "A":
 		m.status = "Fetching ready-for-agent tickets..."
 		return m, m.doFetchAll()
+	case "a":
+		w := m.selectedWorker()
+		if w == nil {
+			return m, nil
+		}
+		m.view = viewRename
+		m.renameWorker = w.name
+		ta := m.newTextArea("name for "+displayWorker(w.name), 1)
+		ta.SetValue(w.alias)
+		m.textArea = ta
+		m.status = "Enter to save, empty to clear, Esc to cancel"
+		return m, ta.Focus()
 	case "d":
 		w := m.selectedWorker()
 		if w == nil {
@@ -516,6 +557,15 @@ func (m tuiModel) updateDispatch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.view = viewList
+		// [n] path: one ticket straight to the chosen worker. A worker runs
+		// one ticket, so extra tokens are ignored - take the first.
+		if m.dispatchWorker != "" {
+			ticket := tickets[0]
+			m.status = fmt.Sprintf("Dispatching %s to %s...", ticket, m.workerLabel(m.dispatchWorker))
+			return m, m.doDispatchTo(m.dispatchWorker, ticket)
+		}
+		// [N] path: spread across any idle workers (orchestrated single,
+		// batch for multiple) - the original dispatch behavior.
 		if len(tickets) == 1 {
 			m.status = fmt.Sprintf("Dispatching %s...", tickets[0])
 			return m, m.doDispatch(tickets[0])
@@ -526,6 +576,46 @@ func (m tuiModel) updateDispatch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.dispatchArea, cmd = m.dispatchArea.Update(msg)
+	return m, cmd
+}
+
+// workerLabel returns the display label for a worker id from the currently
+// loaded list (alias if set, else short id), falling back to the stripped id
+// if the worker is no longer present.
+func (m tuiModel) workerLabel(name string) string {
+	for _, w := range m.workers {
+		if w.name == name {
+			return w.label()
+		}
+	}
+	return displayWorker(name)
+}
+
+func (m tuiModel) updateRename(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = viewList
+		m.status = defaultStatus
+		return m, nil
+	case "enter":
+		worker := m.renameWorker
+		name := strings.TrimSpace(m.textArea.Value())
+		m.view = viewList
+		if err := NewActions(m.repo).Rename(worker, name); err != nil {
+			m.status = fmt.Sprintf("Rename failed: %v", err)
+			return m, nil
+		}
+		if name == "" {
+			m.status = fmt.Sprintf("Cleared name for %s", displayWorker(worker))
+		} else {
+			m.status = fmt.Sprintf("Named %s -> %s", displayWorker(worker), name)
+		}
+		m.loadWorkers()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.textArea, cmd = m.textArea.Update(msg)
 	return m, cmd
 }
 
@@ -663,6 +753,22 @@ func (m tuiModel) doFetchAll() tea.Cmd {
 	}
 }
 
+// doDispatchTo dispatches a single ticket to one chosen worker (the [n]
+// path). Always a direct, non-orchestrated launch - the user picked the
+// slot. Reuses dispatchResultMsg, whose success branch drops into the tail
+// view for the launched worker.
+func (m tuiModel) doDispatchTo(worker, ticket string) tea.Cmd {
+	repo := m.repo
+	return func() tea.Msg {
+		opts := DispatchOpts{Model: "opus", NoOrchestrate: true}
+		out, err := NewActions(repo).DispatchTo(worker, ticket, opts)
+		if err != nil {
+			return dispatchResultMsg{ticket: ticket, worker: worker, err: err}
+		}
+		return dispatchResultMsg{ticket: ticket, worker: out.Worker}
+	}
+}
+
 func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
@@ -728,6 +834,8 @@ func (m tuiModel) View() tea.View {
 		v.SetContent(m.renderInput())
 	case viewDispatch:
 		v.SetContent(m.renderDispatch())
+	case viewRename:
+		v.SetContent(m.renderRename())
 	default:
 		v.SetContent(m.renderList())
 	}
@@ -737,10 +845,10 @@ func (m tuiModel) View() tea.View {
 func (m tuiModel) renderList() string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("  %-10s %-10s %-14s %-12s %s\n",
-		"WORKER", "STATUS", "TICKET", "ELAPSED", "ACTIVITY"))
-	b.WriteString(fmt.Sprintf("  %-10s %-10s %-14s %-12s %s\n",
-		"------", "------", "------", "-------", "--------"))
+	b.WriteString(fmt.Sprintf("  %-10s %-12s %-10s %-14s %-12s %s\n",
+		"WORKER", "NAME", "STATUS", "TICKET", "ELAPSED", "ACTIVITY"))
+	b.WriteString(fmt.Sprintf("  %-10s %-12s %-10s %-14s %-12s %s\n",
+		"------", "----", "------", "------", "-------", "--------"))
 
 	for i, w := range m.workers {
 		prefix := "  "
@@ -750,6 +858,11 @@ func (m tuiModel) renderList() string {
 
 		display := displayWorker(w.name)
 		status := w.state.Status
+
+		name := "-"
+		if w.alias != "" {
+			name = w.alias
+		}
 
 		ticket := "-"
 		if w.state.Ticket != nil {
@@ -780,8 +893,8 @@ func (m tuiModel) renderList() string {
 			}
 		}
 
-		b.WriteString(fmt.Sprintf("%s%-10s %s %-14s %-12s %s\n",
-			prefix, display, paddedStatus, ticket, elapsed, activity))
+		b.WriteString(fmt.Sprintf("%s%-10s %-12s %s %-14s %-12s %s\n",
+			prefix, display, name, paddedStatus, ticket, elapsed, activity))
 	}
 
 	b.WriteString("\n")
@@ -820,6 +933,23 @@ func (m tuiModel) renderInput() string {
 	return b.String()
 }
 
+// newTextArea builds a focused, styled, model-width textarea for the input,
+// dispatch, and rename prompts. height is the visible row count (1 for a
+// single ticket / name field, more for free-form messages).
+func (m tuiModel) newTextArea(placeholder string, height int) textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = placeholder
+	ta.Focus()
+	styleTextArea(&ta)
+	ta.SetHeight(height)
+	if m.width > 0 {
+		ta.SetWidth(m.width - 4)
+	} else {
+		ta.SetWidth(76)
+	}
+	return ta
+}
+
 func styleTextArea(ta *textarea.Model) {
 	s := ta.Styles()
 	white := lipgloss.Color("15")
@@ -836,8 +966,23 @@ func styleTextArea(ta *textarea.Model) {
 func (m tuiModel) renderDispatch() string {
 	var b strings.Builder
 
-	b.WriteString("Dispatch ticket(s):\n\n")
+	if m.dispatchWorker != "" {
+		b.WriteString(fmt.Sprintf("Dispatch ticket to %s:\n\n", m.workerLabel(m.dispatchWorker)))
+	} else {
+		b.WriteString("Dispatch ticket(s) to any idle worker:\n\n")
+	}
 	b.WriteString(m.dispatchArea.View())
+	b.WriteString("\n\n")
+	b.WriteString(m.status)
+
+	return b.String()
+}
+
+func (m tuiModel) renderRename() string {
+	var b strings.Builder
+
+	b.WriteString(fmt.Sprintf("Name worker %s:\n\n", displayWorker(m.renameWorker)))
+	b.WriteString(m.textArea.View())
 	b.WriteString("\n\n")
 	b.WriteString(m.status)
 

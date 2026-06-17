@@ -343,9 +343,13 @@ func TestTUIDispatchOpensTicketInput(t *testing.T) {
 	if m.view != viewDispatch {
 		t.Errorf("view = %d, want viewDispatch (%d)", m.view, viewDispatch)
 	}
+	// [n] targets the selected worker, so the dispatch is pinned to it.
+	if m.dispatchWorker != "worker-aaa" {
+		t.Errorf("dispatchWorker = %q, want worker-aaa", m.dispatchWorker)
+	}
 }
 
-func TestTUIDispatchNoIdleWorkers(t *testing.T) {
+func TestTUIDispatchSelectedBusyWorkerBlocked(t *testing.T) {
 	ticket := "AMBA-1"
 	startedAt := "2026-05-20T14:00:00Z"
 	r := setupTestPool(t, map[string]*WorkerState{
@@ -356,9 +360,31 @@ func TestTUIDispatchNoIdleWorkers(t *testing.T) {
 	updated, _ := m.Update(keyPress('n'))
 	m = updated.(tuiModel)
 
-	// Should still open the dispatch input - pool resize happens on submit
+	// [n] dispatches to the selected worker; a busy one is refused and the
+	// view stays on the list.
+	if m.view != viewList {
+		t.Errorf("view = %d, want viewList (%d)", m.view, viewList)
+	}
+	if !strings.Contains(m.status, "busy") {
+		t.Errorf("expected busy status, got: %q", m.status)
+	}
+}
+
+func TestTUIDispatchAnyIdleOpensInput(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('N'))
+	m = updated.(tuiModel)
+
+	// [N] is the any-idle path: opens the input with no pinned worker.
 	if m.view != viewDispatch {
 		t.Errorf("view = %d, want viewDispatch (%d)", m.view, viewDispatch)
+	}
+	if m.dispatchWorker != "" {
+		t.Errorf("dispatchWorker = %q, want empty (any idle)", m.dispatchWorker)
 	}
 }
 
@@ -549,13 +575,13 @@ func TestSplitTickets(t *testing.T) {
 	}
 }
 
-func TestTUIDispatchAllKeybind(t *testing.T) {
+func TestTUIFetchAllKeybind(t *testing.T) {
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": newIdleWorkerState(),
 	})
 
 	m := newTUIModel(r)
-	updated, cmd := m.Update(keyPress('N'))
+	updated, cmd := m.Update(keyPress('A'))
 	m = updated.(tuiModel)
 
 	if !strings.Contains(m.status, "Fetching") {
@@ -566,18 +592,110 @@ func TestTUIDispatchAllKeybind(t *testing.T) {
 	}
 }
 
-func TestTUIDispatchPlaceholderShowsMultiple(t *testing.T) {
+func TestTUIDispatchAnyIdlePlaceholderShowsMultiple(t *testing.T) {
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": newIdleWorkerState(),
 	})
 
 	m := newTUIModel(r)
-	updated, _ := m.Update(keyPress('n'))
+	updated, _ := m.Update(keyPress('N'))
 	m = updated.(tuiModel)
 
 	view := m.renderDispatch()
 	if !strings.Contains(view, "ticket(s)") {
 		t.Errorf("dispatch view should mention ticket(s), got:\n%s", view)
+	}
+}
+
+func TestTUIRenameOpensView(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('a'))
+	m = updated.(tuiModel)
+
+	if m.view != viewRename {
+		t.Errorf("view = %d, want viewRename (%d)", m.view, viewRename)
+	}
+	if m.renameWorker != "worker-aaa" {
+		t.Errorf("renameWorker = %q, want worker-aaa", m.renameWorker)
+	}
+}
+
+func TestTUIRenameEscCancels(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('a'))
+	m = updated.(tuiModel)
+	if m.view != viewRename {
+		t.Fatalf("expected viewRename, got %d", m.view)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(tuiModel)
+	if m.view != viewList {
+		t.Errorf("after esc in rename: view = %d, want viewList (%d)", m.view, viewList)
+	}
+	// Esc must not write a name.
+	cfg, _ := loadPoolConfig(r.poolConfigFile())
+	if _, ok := cfg.Names["worker-aaa"]; ok {
+		t.Errorf("esc should not persist a name, got %q", cfg.Names["worker-aaa"])
+	}
+}
+
+func TestTUIRenameSavesName(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('a'))
+	m = updated.(tuiModel)
+
+	m.textArea.SetValue("backend")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(tuiModel)
+
+	if m.view != viewList {
+		t.Errorf("after save: view = %d, want viewList (%d)", m.view, viewList)
+	}
+	if !strings.Contains(m.status, "backend") {
+		t.Errorf("status should mention the new name, got: %q", m.status)
+	}
+	cfg, _ := loadPoolConfig(r.poolConfigFile())
+	if cfg.Names["worker-aaa"] != "backend" {
+		t.Errorf("persisted name = %q, want backend", cfg.Names["worker-aaa"])
+	}
+	// The list reload picks up the alias for display.
+	if m.workers[0].alias != "backend" {
+		t.Errorf("worker alias = %q, want backend", m.workers[0].alias)
+	}
+}
+
+func TestTUIViewRendersWorkerName(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+	if err := NewActions(r).Rename("worker-aaa", "backend"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	m := newTUIModel(r)
+	view := m.renderList()
+	if !strings.Contains(view, "NAME") {
+		t.Errorf("view missing NAME column header:\n%s", view)
+	}
+	if !strings.Contains(view, "backend") {
+		t.Errorf("view missing alias backend:\n%s", view)
 	}
 }
 

@@ -14,11 +14,17 @@ import (
 )
 
 type PoolConfig struct {
-	Size       int      `json:"size"`
-	GHRepo     string   `json:"gh_repo"`
-	Workers    []string `json:"workers"`
-	CreatedAt  string   `json:"created_at"`
-	Foreground *bool    `json:"foreground,omitempty"`
+	Size       int               `json:"size"`
+	GHRepo     string            `json:"gh_repo"`
+	Workers    []string          `json:"workers"`
+	CreatedAt  string            `json:"created_at"`
+	Foreground *bool             `json:"foreground,omitempty"`
+	// Names maps a worker id to a user-chosen display alias. Cosmetic only -
+	// it never changes the worker's id, workspace directory, or jj workspace
+	// name. Stored here (not in worker-N.json) so it survives the reset /
+	// redispatch cycle that wipes worker state. Optional and additive, so
+	// jj-wsx (which ignores unknown keys) stays compatible.
+	Names map[string]string `json:"names,omitempty"`
 }
 
 func resolveForeground(r *RepoContext, flag *bool) bool {
@@ -313,6 +319,71 @@ func (p *Pool) reserveLocked(tickets []string) ([]string, error) {
 	return out, nil
 }
 
+// hasWorker reports whether name is a member of the pool. Caller may hold
+// the lock or not; it reads the in-memory cfg either way.
+func (p *Pool) hasWorker(name string) bool {
+	for _, w := range p.cfg.Workers {
+		if w == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ReserveWorker atomically marks one specific idle worker busy with ticket.
+// Unlike Reserve, which picks the first idle worker in pool order, this
+// targets a named slot - the path behind the TUI's [n] dispatch-to-selected.
+// Errors (without touching state) if the worker is not in the pool or not
+// idle. Serialises against concurrent Claim / Reserve / Resize via the lock.
+func (p *Pool) ReserveWorker(name, ticket string) error {
+	return p.withLock(func() error {
+		if !p.hasWorker(name) {
+			return fmt.Errorf("worker %s not in pool", name)
+		}
+		sf := p.repo.workerStateFile(name)
+		ws, err := loadWorkerState(sf)
+		if err != nil {
+			return fmt.Errorf("load worker %s: %w", name, err)
+		}
+		if ws.Status != WorkerStatusIdle {
+			return fmt.Errorf("worker %s is %s, not idle", name, ws.Status)
+		}
+		logFile := filepath.Join(p.repo.poolDir(), name+".log")
+		ws.MarkDispatched(ticket, logFile, strings.ToLower(ticket))
+		if err := saveWorkerState(sf, ws); err != nil {
+			return fmt.Errorf("save worker state: %w", err)
+		}
+		return nil
+	})
+}
+
+// Name returns the display alias for a worker, or "" if unset.
+func (p *Pool) Name(worker string) string {
+	return p.cfg.Names[worker]
+}
+
+// SetName sets (or, with an empty name, clears) a worker's display alias in
+// pool.json. The alias is cosmetic - it never touches the worker id,
+// workspace directory, or jj workspace name. Errors if the worker is not in
+// the pool. Serialises against other pool mutations via the lock.
+func (p *Pool) SetName(worker, name string) error {
+	return p.withLock(func() error {
+		if !p.hasWorker(worker) {
+			return fmt.Errorf("worker %s not in pool", worker)
+		}
+		name = strings.TrimSpace(name)
+		if p.cfg.Names == nil {
+			p.cfg.Names = map[string]string{}
+		}
+		if name == "" {
+			delete(p.cfg.Names, worker)
+		} else {
+			p.cfg.Names[worker] = name
+		}
+		return savePoolConfig(p.repo.poolConfigFile(), p.cfg)
+	})
+}
+
 // Resize grows or shrinks the pool under the lock. Grow adds workers in
 // parallel via jj workspace add; shrink removes idle/done/failed workers
 // from the tail. Shrink fails (without changing state) if not enough
@@ -397,6 +468,7 @@ func (p *Pool) shrink(newSize int) error {
 	for _, name := range removable {
 		p.tearDownWorker(name)
 		removed[name] = true
+		delete(p.cfg.Names, name)
 		info("  Removed %s", name)
 	}
 
@@ -438,6 +510,7 @@ func (p *Pool) Remove(worker string) (int, error) {
 		p.tearDownWorker(worker)
 		p.cfg.Workers = append(p.cfg.Workers[:idx], p.cfg.Workers[idx+1:]...)
 		p.cfg.Size = len(p.cfg.Workers)
+		delete(p.cfg.Names, worker)
 		if err := savePoolConfig(p.repo.poolConfigFile(), p.cfg); err != nil {
 			return err
 		}
@@ -597,11 +670,16 @@ func cmdPoolList() {
 
 	snap := p.Snapshot()
 
-	fmt.Printf("%-10s %-10s %-14s %s\n", "WORKER", "STATUS", "TICKET", "ELAPSED")
-	fmt.Printf("%-10s %-10s %-14s %s\n", "------", "------", "------", "-------")
+	fmt.Printf("%-10s %-12s %-10s %-14s %s\n", "WORKER", "NAME", "STATUS", "TICKET", "ELAPSED")
+	fmt.Printf("%-10s %-12s %-10s %-14s %s\n", "------", "----", "------", "------", "-------")
 
 	for _, v := range snap.Workers {
 		ws := v.State
+
+		name := "-"
+		if alias := p.Name(v.Name); alias != "" {
+			name = alias
+		}
 
 		ticket := "-"
 		if ws.Ticket != nil {
@@ -625,7 +703,7 @@ func cmdPoolList() {
 			paddedStatus = colorize(paddedStatus, colorRed)
 		}
 
-		fmt.Printf("%-10s %s %-14s %s\n", displayWorker(v.Name), paddedStatus, ticket, elapsed)
+		fmt.Printf("%-10s %-12s %s %-14s %s\n", displayWorker(v.Name), name, paddedStatus, ticket, elapsed)
 	}
 
 	fmt.Println()

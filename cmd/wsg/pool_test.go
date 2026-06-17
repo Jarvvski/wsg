@@ -770,6 +770,111 @@ func TestPoolClaimMarksWorkerBusyWithTicket(t *testing.T) {
 	}
 }
 
+func TestPoolReserveWorkerMarksNamedWorkerBusy(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+
+	if err := p.ReserveWorker("worker-2", "AMBA-7"); err != nil {
+		t.Fatalf("ReserveWorker: %v", err)
+	}
+
+	ws2, _ := loadWorkerState(r.workerStateFile("worker-2"))
+	if ws2.Status != WorkerStatusBusy {
+		t.Errorf("worker-2 status = %q, want busy", ws2.Status)
+	}
+	if ws2.Ticket == nil || *ws2.Ticket != "AMBA-7" {
+		t.Errorf("worker-2 ticket = %v, want AMBA-7", ws2.Ticket)
+	}
+	// The first idle worker must be untouched - targeting bypasses pool order.
+	ws1, _ := loadWorkerState(r.workerStateFile("worker-1"))
+	if ws1.Status != WorkerStatusIdle {
+		t.Errorf("worker-1 status = %q, want idle (untargeted)", ws1.Status)
+	}
+}
+
+func TestPoolReserveWorkerRejectsNonIdle(t *testing.T) {
+	ticket := "AMBA-1"
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": {Status: WorkerStatusBusy, Ticket: &ticket},
+	})
+	p, _ := OpenPool(r)
+
+	if err := p.ReserveWorker("worker-1", "AMBA-9"); err == nil {
+		t.Fatal("expected error reserving a busy worker")
+	}
+	// State must be unchanged - still the original ticket.
+	ws, _ := loadWorkerState(r.workerStateFile("worker-1"))
+	if ws.Ticket == nil || *ws.Ticket != "AMBA-1" {
+		t.Errorf("ticket = %v, want AMBA-1 (unchanged)", ws.Ticket)
+	}
+}
+
+func TestPoolReserveWorkerRejectsUnknown(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+	if err := p.ReserveWorker("worker-nope", "AMBA-9"); err == nil {
+		t.Fatal("expected error reserving a worker not in the pool")
+	}
+}
+
+func TestPoolSetNameSetClearAndPersist(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+	})
+
+	p, _ := OpenPool(r)
+	if err := p.SetName("worker-1", "backend"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	cfg, _ := loadPoolConfig(r.poolConfigFile())
+	if cfg.Names["worker-1"] != "backend" {
+		t.Errorf("persisted name = %q, want backend", cfg.Names["worker-1"])
+	}
+
+	// Whitespace-only clears the alias.
+	p2, _ := OpenPool(r)
+	if err := p2.SetName("worker-1", "  "); err != nil {
+		t.Fatalf("SetName clear: %v", err)
+	}
+	cfg, _ = loadPoolConfig(r.poolConfigFile())
+	if _, ok := cfg.Names["worker-1"]; ok {
+		t.Errorf("name should be cleared, got %q", cfg.Names["worker-1"])
+	}
+}
+
+func TestPoolSetNameRejectsUnknown(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+	if err := p.SetName("worker-nope", "backend"); err == nil {
+		t.Fatal("expected error naming a worker not in the pool")
+	}
+}
+
+func TestPoolSetNameClearedOnRemove(t *testing.T) {
+	r := setupPoolWithStates(t, map[string]*WorkerState{
+		"worker-1": newIdleWorkerState(),
+		"worker-2": newIdleWorkerState(),
+	})
+	p, _ := OpenPool(r)
+	if err := p.SetName("worker-1", "backend"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	if _, err := p.Remove("worker-1"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	cfg, _ := loadPoolConfig(r.poolConfigFile())
+	if _, ok := cfg.Names["worker-1"]; ok {
+		t.Errorf("removed worker's alias should be gone, got %q", cfg.Names["worker-1"])
+	}
+}
+
 func TestPoolClaimNoIdleErrors(t *testing.T) {
 	ticket := "AMBA-1"
 	r := setupPoolWithStates(t, map[string]*WorkerState{

@@ -4,6 +4,17 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.6.0 - 2026-06-17
+
+### Added
+
+- **Dispatch a ticket to a specific worker from the TUI.** Press `n` on the highlighted worker to send one ticket straight to that slot (it must be idle), instead of letting the pool grab the first free worker - handy for routing work to a long-lived personal worker. The any-idle behavior moved to `N` (see Changed).
+- **Name your workers in the TUI.** Press `a` on a worker to set or clear a display alias, shown in a new `NAME` column in both the TUI and `wsg pool list` / `wsg status`. The alias is cosmetic - it never changes the worker id, workspace directory, or jj workspace name - and lives in `pool.json`, so it survives kills, resets, and redispatch and a personal worker keeps its label.
+
+### Changed
+
+- **TUI dispatch keys remapped.** `n` now dispatches to the selected worker (previously: any idle worker). `N` now dispatches typed ticket(s) to any idle worker - the old `n` behavior, where a single ticket still orchestrates its sub-issues and multiple tickets spread across the pool. `A` now fetches all `ready-for-agent` tickets from Linear and dispatches them (previously bound to `N`).
+
 ## 0.5.0 - 2026-06-10
 
 ### Changed
