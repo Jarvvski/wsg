@@ -3,21 +3,160 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
 type agentEntry struct {
-	id     string
-	tokens int
+	id       string
+	parentID string
+	label    string
+	tokens   int
 }
 
 type logState struct {
-	seen          map[string]bool
-	contextTokens int
-	agentStack    []agentEntry
+	seen            map[string]bool
+	contextTokens   int
+	activeAgents    map[string]agentEntry
+	legacyAgentPath []string
+}
+
+func (s *logState) init() {
+	if s.seen == nil {
+		s.seen = make(map[string]bool)
+	}
+	if s.activeAgents == nil {
+		s.activeAgents = make(map[string]agentEntry)
+	}
+}
+
+func (s *logState) messageParent(ev streamEvent) (string, bool) {
+	if len(ev.ParentToolUseID) > 0 {
+		if string(ev.ParentToolUseID) == "null" {
+			return "", true
+		}
+		var id string
+		if json.Unmarshal(ev.ParentToolUseID, &id) == nil {
+			return id, true
+		}
+	}
+	if len(s.legacyAgentPath) > 0 {
+		return s.legacyAgentPath[len(s.legacyAgentPath)-1], false
+	}
+	return "", false
+}
+
+func (s *logState) agentDepth(parentID string) int {
+	depth := 0
+	visited := make(map[string]bool)
+	for parentID != "" && !visited[parentID] {
+		visited[parentID] = true
+		entry, ok := s.activeAgents[parentID]
+		if !ok {
+			break
+		}
+		depth++
+		parentID = entry.parentID
+	}
+	return depth
+}
+
+func (s *logState) startAgent(id, parentID, label string, legacy bool) {
+	if id == "" {
+		return
+	}
+	s.activeAgents[id] = agentEntry{id: id, parentID: parentID, label: label, tokens: s.contextTokens}
+	if legacy {
+		s.legacyAgentPath = append(s.legacyAgentPath, id)
+	}
+}
+
+func (s *logState) completeAgent(id string) (agentEntry, int, bool) {
+	if id == "" && len(s.legacyAgentPath) > 0 {
+		id = s.legacyAgentPath[len(s.legacyAgentPath)-1]
+	}
+	entry, ok := s.activeAgents[id]
+	if !ok {
+		return agentEntry{}, 0, false
+	}
+	depth := s.agentDepth(entry.parentID)
+	delete(s.activeAgents, id)
+	for i := len(s.legacyAgentPath) - 1; i >= 0; i-- {
+		if s.legacyAgentPath[i] == id {
+			s.legacyAgentPath = append(s.legacyAgentPath[:i], s.legacyAgentPath[i+1:]...)
+			break
+		}
+	}
+	return entry, depth, true
+}
+
+func (s *logState) applyClaudeUsage(ev streamEvent) []int {
+	if ev.Message == nil || ev.Message.Usage == nil {
+		return nil
+	}
+	newTokens := ev.Message.Usage.InputTokens +
+		ev.Message.Usage.CacheReadInputTokens +
+		ev.Message.Usage.CacheCreationInputTokens +
+		ev.Message.Usage.OutputTokens
+	var closed []int
+	if len(ev.ParentToolUseID) == 0 {
+		for len(s.legacyAgentPath) > 0 && newTokens < s.contextTokens {
+			id := s.legacyAgentPath[len(s.legacyAgentPath)-1]
+			entry, ok := s.activeAgents[id]
+			if !ok {
+				s.legacyAgentPath = s.legacyAgentPath[:len(s.legacyAgentPath)-1]
+				continue
+			}
+			if entry.tokens == 0 || newTokens >= entry.tokens*2 {
+				break
+			}
+			if _, depth, ok := s.completeAgent(id); ok {
+				closed = append(closed, depth)
+			}
+		}
+	}
+	s.contextTokens = newTokens
+	return closed
+}
+
+func isClaudeAgentTool(name string) bool {
+	return name == "Agent" || name == "Task"
+}
+
+func claudeTextKey(parentID, text string) string {
+	return "claude:" + parentID + ":" + text
+}
+
+func claudeAgentLabel(id string, input any) string {
+	if fields, ok := input.(map[string]any); ok {
+		for _, key := range []string{"description", "subagent_type", "prompt"} {
+			if value, ok := fields[key].(string); ok && strings.TrimSpace(value) != "" {
+				label := strings.Join(strings.Fields(value), " ")
+				if len(label) > 40 {
+					label = label[:37] + "..."
+				}
+				return label
+			}
+		}
+	}
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func (s *logState) agentAssociation(id string) string {
+	if id == "" {
+		return ""
+	}
+	if entry, ok := s.activeAgents[id]; ok && entry.label != "" {
+		return "[" + entry.label + "] "
+	}
+	return "[" + claudeAgentLabel(id, nil) + "] "
 }
 
 func formatEvent(line string, state *logState) {
+	state.init()
 	var kind struct {
 		Type string `json:"type"`
 	}
@@ -41,23 +180,14 @@ func formatEvent(line string, state *logState) {
 		if ev.Message == nil {
 			return
 		}
-		if ev.Message.Usage != nil {
-			newTokens := ev.Message.Usage.InputTokens +
-				ev.Message.Usage.CacheReadInputTokens +
-				ev.Message.Usage.CacheCreationInputTokens +
-				ev.Message.Usage.OutputTokens
-			for len(state.agentStack) > 0 && newTokens < state.contextTokens {
-				top := state.agentStack[len(state.agentStack)-1]
-				if top.tokens > 0 && newTokens < top.tokens*2 {
-					state.agentStack = state.agentStack[:len(state.agentStack)-1]
-					depth := len(state.agentStack)
-					closeStr := treeClose(depth)
-					fmt.Printf("       %s\n", colorize(closeStr, colorDim))
-				} else {
-					break
-				}
-			}
-			state.contextTokens = newTokens
+		for _, depth := range state.applyClaudeUsage(ev) {
+			fmt.Printf("       %s\n", colorize(treeClose(depth), colorDim))
+		}
+		parentID, explicitParent := state.messageParent(ev)
+		depth := state.agentDepth(parentID)
+		association := ""
+		if explicitParent {
+			association = state.agentAssociation(parentID)
 		}
 		for _, c := range ev.Message.Content {
 			switch c.Type {
@@ -65,15 +195,15 @@ func formatEvent(line string, state *logState) {
 				if c.Text == "" {
 					return
 				}
-				if state.seen[c.Text] {
+				textKey := claudeTextKey(parentID, c.Text)
+				if state.seen[textKey] {
 					return
 				}
-				state.seen[c.Text] = true
-				depth := len(state.agentStack)
+				state.seen[textKey] = true
 				if depth > 0 {
 					prefix := colorize(treeBranch(depth), colorDim)
 					for _, line := range strings.Split(c.Text, "\n") {
-						fmt.Printf("       %s%s\n", prefix, line)
+						fmt.Printf("       %s%s%s\n", prefix, colorize(association, colorDim), line)
 					}
 				} else {
 					fmt.Println(c.Text)
@@ -81,9 +211,8 @@ func formatEvent(line string, state *logState) {
 			case "tool_use":
 				input := summarizeInput(c.Input, 80)
 				ctx := contextBadge(state.contextTokens)
-				depth := len(state.agentStack)
 				var prefix string
-				if c.Name == "Agent" {
+				if isClaudeAgentTool(c.Name) {
 					prefix = treeAgentBranch(depth)
 				} else {
 					prefix = treeBranch(depth)
@@ -91,38 +220,37 @@ func formatEvent(line string, state *logState) {
 				fmt.Printf("%s %s%s%s\n",
 					ctx,
 					colorize(prefix, colorDim),
-					colorize(c.Name, colorYellow),
+					colorize(association+c.Name, colorYellow),
 					input,
 				)
-				if c.Name == "Agent" {
-					state.agentStack = append(state.agentStack, agentEntry{
-						id:     c.ID,
-						tokens: state.contextTokens,
-					})
+				if isClaudeAgentTool(c.Name) {
+					state.startAgent(c.ID, parentID, claudeAgentLabel(c.ID, c.Input), !explicitParent)
+				}
+			}
+		}
+
+	case "user":
+		if ev.Message == nil {
+			return
+		}
+		for _, c := range ev.Message.Content {
+			if c.Type == "tool_result" {
+				if entry, depth, ok := state.completeAgent(c.ToolUseID); ok {
+					fmt.Printf("       %s %s\n", colorize(treeClose(depth), colorDim), colorize("["+entry.label+"]", colorDim))
 				}
 			}
 		}
 
 	case "tool":
-		if ev.Tool == nil || len(state.agentStack) == 0 {
+		if ev.Tool == nil {
 			return
 		}
-		isAgent := ev.Tool.Name == "Agent"
-		if !isAgent && ev.Tool.ToolUseID != "" {
-			for _, entry := range state.agentStack {
-				if entry.id == ev.Tool.ToolUseID {
-					isAgent = true
-					break
-				}
-			}
-		}
-		if !isAgent {
+		if !isClaudeAgentTool(ev.Tool.Name) && ev.Tool.ToolUseID == "" {
 			return
 		}
-		state.agentStack = state.agentStack[:len(state.agentStack)-1]
-		depth := len(state.agentStack)
-		closeStr := treeClose(depth)
-		fmt.Printf("       %s\n", colorize(closeStr, colorDim))
+		if _, depth, ok := state.completeAgent(ev.Tool.ToolUseID); ok {
+			fmt.Printf("       %s\n", colorize(treeClose(depth), colorDim))
+		}
 
 	case "result":
 		dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
@@ -144,6 +272,7 @@ func formatEvent(line string, state *logState) {
 }
 
 func formatEventToString(line string, state *logState) string {
+	state.init()
 	var kind struct {
 		Type string `json:"type"`
 	}
@@ -164,20 +293,50 @@ func formatEventToString(line string, state *logState) string {
 		if ev.Message == nil {
 			return ""
 		}
+		parentID, explicitParent := state.messageParent(ev)
+		association := ""
+		if explicitParent {
+			association = state.agentAssociation(parentID)
+		}
 		var parts []string
 		for _, c := range ev.Message.Content {
 			switch c.Type {
 			case "text":
-				if c.Text != "" && !state.seen[c.Text] {
-					state.seen[c.Text] = true
-					parts = append(parts, c.Text)
+				textKey := claudeTextKey(parentID, c.Text)
+				if c.Text != "" && !state.seen[textKey] {
+					state.seen[textKey] = true
+					parts = append(parts, association+c.Text)
 				}
 			case "tool_use":
 				input := summarizeInput(c.Input, 0)
-				parts = append(parts, colorize(c.Name, colorYellow)+input)
+				parts = append(parts, colorize(association+c.Name, colorYellow)+input)
+				if isClaudeAgentTool(c.Name) {
+					state.startAgent(c.ID, parentID, claudeAgentLabel(c.ID, c.Input), !explicitParent)
+				}
 			}
 		}
 		return strings.Join(parts, " ")
+	case "user":
+		if ev.Message == nil {
+			return ""
+		}
+		var parts []string
+		for _, c := range ev.Message.Content {
+			if c.Type == "tool_result" {
+				if entry, _, ok := state.completeAgent(c.ToolUseID); ok {
+					parts = append(parts, "Agent "+entry.label+" completed")
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	case "tool":
+		if ev.Tool == nil {
+			return ""
+		}
+		if entry, _, ok := state.completeAgent(ev.Tool.ToolUseID); ok {
+			return "Agent " + entry.label + " completed"
+		}
+		return ""
 	case "result":
 		dur := fmt.Sprintf("%.0fs", float64(ev.DurationMs)/1000)
 		cost := fmt.Sprintf("$%.2f", ev.TotalCost)
@@ -307,7 +466,11 @@ func formatCodexEventToString(line string, state *logState) string {
 				return ""
 			}
 			state.seen[key+":"+ev.Type] = true
-			return colorize("Collab", colorYellow) + " " + ev.Item.Tool
+			statusColor := colorYellow
+			if codexCollabFailed(ev.Item) {
+				statusColor = colorRed
+			}
+			return colorize("Collab", statusColor) + " " + codexCollabDetails(ev.Item, true)
 		}
 	case "turn.completed":
 		usage := ""
@@ -327,6 +490,57 @@ func formatCodexEventToString(line string, state *logState) string {
 		return fmt.Sprintf("%s %s: %s", colorize("---", colorDim), colorize("error", colorRed), msg)
 	}
 	return ""
+}
+
+func codexCollabFailed(item *codexItem) bool {
+	if item.Status == "failed" {
+		return true
+	}
+	for _, state := range item.AgentsStates {
+		switch state.Status {
+		case "errored", "interrupted", "not_found":
+			return true
+		}
+	}
+	return false
+}
+
+func codexCollabDetails(item *codexItem, includeContext bool) string {
+	parts := []string{item.Tool}
+	if item.Status != "" {
+		parts = append(parts, item.Status)
+	}
+	if includeContext && item.SenderThreadID != "" {
+		parts = append(parts, "sender="+item.SenderThreadID)
+	}
+	if includeContext && len(item.ReceiverThreadIDs) > 0 {
+		parts = append(parts, "receivers="+strings.Join(item.ReceiverThreadIDs, ","))
+	}
+	if includeContext && strings.TrimSpace(item.Prompt) != "" {
+		parts = append(parts, "prompt="+strings.Join(strings.Fields(item.Prompt), " "))
+	}
+
+	ids := make([]string, 0, len(item.AgentsStates))
+	for id := range item.AgentsStates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		state := item.AgentsStates[id]
+		detail := id + "=" + state.Status
+		if state.Message != "" {
+			detail += " (" + strings.Join(strings.Fields(state.Message), " ") + ")"
+		}
+		parts = append(parts, detail)
+	}
+	if !includeContext && len(ids) == 0 {
+		if len(item.ReceiverThreadIDs) > 0 {
+			parts = append(parts, strings.Join(item.ReceiverThreadIDs, ","))
+		} else if strings.TrimSpace(item.Prompt) != "" {
+			parts = append(parts, strings.Join(strings.Fields(item.Prompt), " "))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func contextBadge(tokens int) string {

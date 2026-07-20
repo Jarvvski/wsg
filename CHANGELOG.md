@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.8.0 - 2026-07-20
+
+### Added
+
+- **Delegate read-only analysis within Agent Sessions.** Claude Code and Codex Agent Runtimes can use supported in-session subagents for independent exploration, documentation lookup, test or log analysis, and review while the top-level Agent Runtime retains all tracked edits, jj operations, verification, and delivery. Optional runtime flags are enabled only when the installed CLI reports support, Follow-ups receive the same delegation rules, and structured logs show concurrent subagent activity and failures.
+
 ## 0.7.1 - 2026-07-20
 
 ### Fixed

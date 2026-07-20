@@ -8,11 +8,12 @@ import (
 )
 
 type claudeInvocation struct {
-	Model        string
-	SessionID    string
-	Name         string
-	SystemPrompt string
-	Prompt       string
+	Model               string
+	SessionID           string
+	Name                string
+	SystemPrompt        string
+	Prompt              string
+	ForwardSubagentText bool
 }
 
 func (c *claudeInvocation) Args() []string {
@@ -24,6 +25,9 @@ func (c *claudeInvocation) Args() []string {
 		args = append(args, "--resume", c.SessionID, "--fork-session")
 	}
 	args = append(args, "--output-format", "stream-json", "--verbose")
+	if c.ForwardSubagentText {
+		args = append(args, "--forward-subagent-text")
+	}
 	// Auto mode: bias toward acting without pausing for clarifying
 	// questions. --permission-mode does not accept "auto", but the
 	// equivalent settings.permissions.defaultMode does.

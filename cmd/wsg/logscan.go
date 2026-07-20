@@ -180,7 +180,7 @@ func codexActivity(ev codexEvent) string {
 		case "todo_list":
 			return "plan updated"
 		case "collab_tool_call":
-			return "collab " + ev.Item.Tool
+			return "collab " + codexCollabDetails(ev.Item, false)
 		}
 	}
 	return ""

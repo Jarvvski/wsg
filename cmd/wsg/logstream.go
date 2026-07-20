@@ -37,6 +37,10 @@ func streamLogs(path string) {
 }
 
 func readLogTail(path string, offset int64) ([]string, int64) {
+	return readLogTailWithState(path, offset, &logState{})
+}
+
+func readLogTailWithState(path string, offset int64, state *logState) ([]string, int64) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, offset
@@ -48,7 +52,6 @@ func readLogTail(path string, offset int64) ([]string, int64) {
 	}
 
 	var lines []string
-	state := &logState{seen: make(map[string]bool)}
 	reader := bufio.NewReader(f)
 	for {
 		line, err := reader.ReadString('\n')

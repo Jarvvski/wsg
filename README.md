@@ -110,6 +110,12 @@ The field accepts `claude` or `codex` and defaults to `claude` when omitted. `cx
 
 The selected runtime also performs Linear ticket discovery and dependency queries. Codex therefore requires an authenticated Linear MCP server in its configuration. Background workers run without approval prompts, so the Linear MCP policy must allow the ticket updates used by the dispatch workflow.
 
+Agent Sessions enable in-session delegation when the installed Agent Runtime supports it. Codex is launched with `multi_agent` when `codex features list` exposes that feature, and Claude Code forwards subagent text when its CLI exposes `--forward-subagent-text`. Capability probes are best-effort: an unavailable probe or optional flag does not block the Run, and the short-lived Linear query path does not enable delegation.
+
+A fresh Agent Session and every Follow-up receive the same delegation contract. Subagents may perform independent exploration, documentation lookup, test or log analysis, and review, but they must not edit tracked files or run jj. The top-level Agent Runtime remains responsible for tracked edits, jj operations, verification, and delivery. Delegation stays inside the Agent Session, cannot nest, and must finish before the Run finishes. Runtime concurrency and token limits remain provider-owned and do not consume extra Worker Pool slots.
+
+Structured logs associate concurrent Claude Code messages through `parent_tool_use_id` and show Codex collaboration lifecycle details, including sender and receiver IDs, prompts, per-agent states, completion, and failure. Worker Status still follows only the top-level Agent Runtime result. Reset terminates the existing runtime process group, including child processes; provider task IDs and detached sessions are not persisted.
+
 ### Dispatch workflow
 
 When you run `wsg dispatch TICKET-123`:

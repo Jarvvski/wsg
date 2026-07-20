@@ -424,6 +424,41 @@ func TestTUIFollowSwitchesToTailView(t *testing.T) {
 	}
 }
 
+func TestTUITailPreservesClaudeAgentAssociationAcrossPolls(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "worker.log")
+	spawn := `{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","id":"a1","input":{"description":"First"}}]}}`
+	if err := os.WriteFile(logFile, []byte(spawn+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": {Status: WorkerStatusBusy, LogFile: &logFile},
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('f'))
+	m = updated.(tuiModel)
+
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	followUp := `{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"text","text":"from first"}]}}` + "\n" +
+		`{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"done"}]}}` + "\n"
+	if _, err := f.WriteString(followUp); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.loadTailLines()
+	got := strings.Join(m.tailLines, "\n")
+	if !strings.Contains(got, "[First] from first") || !strings.Contains(got, "Agent First completed") {
+		t.Errorf("incremental tail lost agent association:\n%s", got)
+	}
+}
+
 func TestTUITailViewQReturnsToList(t *testing.T) {
 	logFile := "/tmp/test.log"
 	r := setupTestPool(t, map[string]*WorkerState{

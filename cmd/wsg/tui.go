@@ -93,6 +93,7 @@ type tuiModel struct {
 	tailWorker    string
 	tailLines     []string
 	tailOffset    int64
+	tailLogState  *logState
 	tailViewport  viewport.Model
 	tailFollowing bool
 
@@ -260,6 +261,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tailWorker = msg.worker
 			m.tailLines = nil
 			m.tailOffset = 0
+			m.tailLogState = &logState{}
 			m.loadTailLines()
 		}
 		m.loadWorkers()
@@ -272,6 +274,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tailWorker = msg.worker
 			m.tailLines = nil
 			m.tailOffset = 0
+			m.tailLogState = &logState{}
 			m.loadTailLines()
 		}
 	case openPRResultMsg:
@@ -477,6 +480,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.tailWorker = w.name
 		m.tailLines = nil
 		m.tailOffset = 0
+		m.tailLogState = &logState{}
 		m.tailFollowing = true
 		vpW, vpH := m.tailViewportSize()
 		vp := viewport.New(viewport.WithWidth(vpW), viewport.WithHeight(vpH))
@@ -792,9 +796,12 @@ func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 // ── Tail helpers ───────────────────────────────────────────────────
 
 func (m *tuiModel) loadTailLines() {
+	if m.tailLogState == nil {
+		m.tailLogState = &logState{}
+	}
 	for _, w := range m.workers {
 		if w.name == m.tailWorker && w.state.LogFile != nil {
-			lines, newOffset := readLogTail(*w.state.LogFile, m.tailOffset)
+			lines, newOffset := readLogTailWithState(*w.state.LogFile, m.tailOffset, m.tailLogState)
 			if len(lines) == 0 && m.tailOffset == newOffset {
 				return
 			}

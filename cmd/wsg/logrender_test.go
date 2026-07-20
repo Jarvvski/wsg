@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -144,6 +145,66 @@ func TestFormatCodexMCPFailureAfterStart(t *testing.T) {
 	}
 }
 
+func TestFormatCodexCollaborationLifecycle(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"item.started","item":{"id":"spawn-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":[],"prompt":"Inspect logs","agents_states":{},"status":"in_progress"}}`, state)
+		formatEvent(`{"type":"item.completed","item":{"id":"spawn-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":["agent-a"],"prompt":"Inspect logs","agents_states":{"agent-a":{"status":"running"}},"status":"completed"}}`, state)
+		formatEvent(`{"type":"item.started","item":{"id":"wait-1","type":"collab_tool_call","tool":"wait","sender_thread_id":"thread-main","receiver_thread_ids":["agent-a"],"agents_states":{"agent-a":{"status":"running"}},"status":"in_progress"}}`, state)
+		formatEvent(`{"type":"item.completed","item":{"id":"wait-1","type":"collab_tool_call","tool":"wait","sender_thread_id":"thread-main","receiver_thread_ids":["agent-a"],"agents_states":{"agent-a":{"status":"completed","message":"Found issue"}},"status":"completed"}}`, state)
+		formatEvent(`{"type":"item.completed","item":{"id":"wait-2","type":"collab_tool_call","tool":"wait","sender_thread_id":"thread-main","receiver_thread_ids":["agent-b"],"agents_states":{"agent-b":{"status":"errored","message":"timed out"}},"status":"failed"}}`, state)
+	})
+
+	for _, want := range []string{
+		"spawn_agent in_progress",
+		"sender=thread-main",
+		"prompt=Inspect logs",
+		"spawn_agent completed",
+		"receivers=agent-a",
+		"agent-a=running",
+		"wait completed",
+		"agent-a=completed (Found issue)",
+		"wait failed",
+		"agent-b=errored (timed out)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCodexCollaborationFailureIsMeaningfulLastActivity(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "worker.log")
+	line := `{"type":"item.completed","item":{"id":"wait-2","type":"collab_tool_call","tool":"wait","sender_thread_id":"thread-main","receiver_thread_ids":["agent-b"],"agents_states":{"agent-b":{"status":"errored","message":"timeout"}},"status":"failed"}}`
+	if err := os.WriteFile(logFile, []byte(line+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readLastActivity(logFile)
+	if !strings.Contains(got, "wait failed") || !strings.Contains(got, "agent-b=errored") {
+		t.Errorf("last activity = %q, want failed wait and agent state", got)
+	}
+}
+
+func TestCodexCollaborationSpawnIsMeaningfulLastActivity(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "worker.log")
+	line := `{"type":"item.started","item":{"id":"spawn-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":[],"prompt":"Inspect logs","agents_states":{},"status":"in_progress"}}`
+	if err := os.WriteFile(logFile, []byte(line+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readLastActivity(logFile)
+	if !strings.Contains(got, "spawn_agent in_progress") || !strings.Contains(got, "Inspect logs") {
+		t.Errorf("last activity = %q, want spawn lifecycle and prompt", got)
+	}
+}
+
 func TestTreeBranch(t *testing.T) {
 	tests := []struct {
 		depth int
@@ -218,8 +279,8 @@ func TestAgentNesting(t *testing.T) {
 	if out != "[  ?k] ├──╮ Agent Explore code\n" {
 		t.Errorf("agent at depth 0: got %q", out)
 	}
-	if len(state.agentStack) != 1 {
-		t.Fatalf("agentStack len = %d, want 1", len(state.agentStack))
+	if len(state.activeAgents) != 1 {
+		t.Fatalf("activeAgents len = %d, want 1", len(state.activeAgents))
 	}
 
 	// Tool at depth 1 has parent continuation
@@ -245,8 +306,8 @@ func TestAgentNesting(t *testing.T) {
 	if out != "       ╰─\n" {
 		t.Errorf("agent close: got %q", out)
 	}
-	if len(state.agentStack) != 0 {
-		t.Fatalf("agentStack len = %d, want 0", len(state.agentStack))
+	if len(state.activeAgents) != 0 {
+		t.Fatalf("activeAgents len = %d, want 0", len(state.activeAgents))
 	}
 
 	// Back to depth 0
@@ -255,6 +316,28 @@ func TestAgentNesting(t *testing.T) {
 	})
 	if out != "[  ?k] ├─ Read /bar.go\n" {
 		t.Errorf("back to depth 0: got %q", out)
+	}
+}
+
+func TestLegacyClaudeTaskEventsRemainCompatible(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Task","id":"task-1","input":{"description":"Legacy explore"}}]}}`, state)
+		formatEvent(`{"type":"assistant","message":{"content":[{"type":"text","text":"legacy result"}]}}`, state)
+		formatEvent(`{"type":"tool","tool":{"type":"tool_result","name":"Task","tool_use_id":"task-1"}}`, state)
+	})
+
+	for _, want := range []string{"├──╮ Task Legacy explore", "│  ├─ legacy result", "╰─"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("legacy Task output missing %q: %q", want, out)
+		}
+	}
+	if len(state.activeAgents) != 0 {
+		t.Errorf("legacy Task remained active: %+v", state.activeAgents)
 	}
 }
 
@@ -276,8 +359,8 @@ func TestNestedAgents(t *testing.T) {
 	if out != "[  ?k] │  ├──╮ Agent Inner\n" {
 		t.Errorf("inner agent: got %q", out)
 	}
-	if len(state.agentStack) != 2 {
-		t.Fatalf("agentStack len = %d, want 2", len(state.agentStack))
+	if len(state.activeAgents) != 2 {
+		t.Fatalf("activeAgents len = %d, want 2", len(state.activeAgents))
 	}
 
 	// Tool at depth 2
@@ -329,8 +412,8 @@ func TestAgentCompletionByContextDrop(t *testing.T) {
 	captureOutput(func() {
 		formatEvent(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","id":"a1","input":{"description":"Explore"}}]}}`, state)
 	})
-	if len(state.agentStack) != 1 || state.agentStack[0].tokens != 34000 {
-		t.Fatalf("agentStack = %+v, want [{id:a1 tokens:34000}]", state.agentStack)
+	if len(state.activeAgents) != 1 || state.activeAgents["a1"].tokens != 34000 {
+		t.Fatalf("activeAgents = %+v, want a1 at 34000 tokens", state.activeAgents)
 	}
 
 	// Sub-agent runs, context grows to 139k
@@ -342,8 +425,8 @@ func TestAgentCompletionByContextDrop(t *testing.T) {
 	out := captureOutput(func() {
 		formatEvent(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":30000,"output_tokens":6000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`, state)
 	})
-	if len(state.agentStack) != 0 {
-		t.Fatalf("agentStack should be empty after context drop, len = %d", len(state.agentStack))
+	if len(state.activeAgents) != 0 {
+		t.Fatalf("activeAgents should be empty after context drop, len = %d", len(state.activeAgents))
 	}
 	want := "       ╰─\n[ 36k] ├─ Bash ls\n"
 	if out != want {
@@ -370,8 +453,8 @@ func TestNestedAgentCompletionByContextDrop(t *testing.T) {
 	captureOutput(func() {
 		formatEvent(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","id":"a2","input":{"description":"Inner"}}],"usage":{"input_tokens":80000,"output_tokens":10000,"cache_read_input_tokens":5000,"cache_creation_input_tokens":5000}}}`, state)
 	})
-	if len(state.agentStack) != 2 {
-		t.Fatalf("agentStack len = %d, want 2", len(state.agentStack))
+	if len(state.activeAgents) != 2 {
+		t.Fatalf("activeAgents len = %d, want 2", len(state.activeAgents))
 	}
 
 	// Inner agent grows to 200k
@@ -383,8 +466,8 @@ func TestNestedAgentCompletionByContextDrop(t *testing.T) {
 	out := captureOutput(func() {
 		formatEvent(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/y.go"}}],"usage":{"input_tokens":80000,"output_tokens":15000,"cache_read_input_tokens":5000,"cache_creation_input_tokens":5000}}}`, state)
 	})
-	if len(state.agentStack) != 1 {
-		t.Fatalf("after inner drop: agentStack len = %d, want 1", len(state.agentStack))
+	if len(state.activeAgents) != 1 {
+		t.Fatalf("after inner drop: activeAgents len = %d, want 1", len(state.activeAgents))
 	}
 	want := "       │  ╰─\n[105k] │  ├─ Read /y.go\n"
 	if out != want {
@@ -395,12 +478,93 @@ func TestNestedAgentCompletionByContextDrop(t *testing.T) {
 	out = captureOutput(func() {
 		formatEvent(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"done"}}],"usage":{"input_tokens":30000,"output_tokens":5000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`, state)
 	})
-	if len(state.agentStack) != 0 {
-		t.Fatalf("after outer drop: agentStack len = %d, want 0", len(state.agentStack))
+	if len(state.activeAgents) != 0 {
+		t.Fatalf("after outer drop: activeAgents len = %d, want 0", len(state.activeAgents))
 	}
 	want = "       ╰─\n[ 35k] ├─ Bash done\n"
 	if out != want {
 		t.Errorf("outer agent drop:\ngot  %q\nwant %q", out, want)
+	}
+}
+
+func TestConcurrentClaudeAgentsRenderByParentAndCompleteOutOfOrder(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+
+	state := &logState{seen: make(map[string]bool)}
+	out := captureOutput(func() {
+		formatEvent(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","id":"a1","input":{"description":"First"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","id":"a2","input":{"description":"Second"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"text","text":"from first"}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a2","message":{"content":[{"type":"text","text":"from second"}]}}`, state)
+		formatEvent(`{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"done"}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo root"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a2","message":{"content":[{"type":"text","text":"second still active"}]}}`, state)
+		formatEvent(`{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"a2","content":"done"}]}}`, state)
+	})
+
+	wants := []string{
+		"[  ?k] ├──╮ Agent First\n",
+		"[  ?k] ├──╮ Agent Second\n",
+		"       │  ├─ [First] from first\n",
+		"       │  ├─ [Second] from second\n",
+		"       ╰─ [First]\n[  ?k] ├─ Bash echo root\n",
+		"       │  ├─ [Second] second still active\n",
+	}
+	for _, want := range wants {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestConcurrentClaudeAgentsDoNotDeduplicateEachOthersText(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","id":"a1","input":{"description":"First"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","id":"a2","input":{"description":"Second"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"text","text":"same finding"}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a2","message":{"content":[{"type":"text","text":"same finding"}]}}`, state)
+	})
+
+	if got := strings.Count(out, "same finding"); got != 2 {
+		t.Errorf("same text from two agents rendered %d times, want 2:\n%s", got, out)
+	}
+}
+
+func TestCurrentClaudeNestedEventsRenderByParent(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","id":"a1","input":{"description":"Outer"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"tool_use","name":"Agent","id":"a2","input":{"description":"Inner"}}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a2","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x.go"}}]}}`, state)
+		formatEvent(`{"type":"user","parent_tool_use_id":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"a2","content":"done"}]}}`, state)
+		formatEvent(`{"type":"assistant","parent_tool_use_id":"a1","message":{"content":[{"type":"text","text":"outer resumed"}]}}`, state)
+		formatEvent(`{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"done"}]}}`, state)
+	})
+
+	for _, want := range []string{
+		"│  ├──╮ [Outer] Agent Inner",
+		"│  │  ├─ [Inner] Read /x.go",
+		"│  ╰─ [Inner]",
+		"│  ├─ [Outer] outer resumed",
+		"╰─ [Outer]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("nested output missing %q:\n%s", want, out)
+		}
+	}
+	if len(state.activeAgents) != 0 {
+		t.Errorf("nested agents remained active: %+v", state.activeAgents)
 	}
 }
 

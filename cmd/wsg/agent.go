@@ -12,6 +12,15 @@ const (
 	AgentCodex  AgentKind = "codex"
 )
 
+const delegationRules = `Delegated work is read-only.
+
+- Use in-session background tasks or subagents only for independent exploration, documentation lookup, test or log analysis, or review.
+- Explicitly tell every subagent not to edit tracked files or run jj commands.
+- Do not use detached sessions, nested delegation, or worktree or workspace creation.
+- Await all delegated work before finishing.
+- If delegation is unavailable or fails, continue the work directly.
+- The main agent alone owns tracked edits, jj operations, verification, and delivery.`
+
 func parseAgent(value string) (AgentKind, error) {
 	agent := AgentKind(strings.ToLower(strings.TrimSpace(value)))
 	if agent == "" {
@@ -44,6 +53,22 @@ type agentInvocation struct {
 	Name         string
 	SystemPrompt string
 	Prompt       string
+	Capabilities agentCapabilities
+}
+
+type agentCapabilities struct {
+	MultiAgent          bool
+	ForwardSubagentText bool
+}
+
+func withDelegationRules(sessionID, systemPrompt, prompt string) (string, string) {
+	if sessionID != "" {
+		return "", delegationRules + "\n\n" + prompt
+	}
+	if systemPrompt != "" {
+		systemPrompt += "\n\n"
+	}
+	return systemPrompt + delegationRules, prompt
 }
 
 func (inv agentInvocation) Command() (string, []string, error) {
@@ -52,12 +77,14 @@ func (inv agentInvocation) Command() (string, []string, error) {
 		return "", nil, err
 	}
 	if agent == AgentClaude {
+		systemPrompt, prompt := withDelegationRules(inv.SessionID, inv.SystemPrompt, inv.Prompt)
 		claude := claudeInvocation{
-			Model:        inv.Model,
-			SessionID:    inv.SessionID,
-			Name:         inv.Name,
-			SystemPrompt: inv.SystemPrompt,
-			Prompt:       inv.Prompt,
+			Model:               inv.Model,
+			SessionID:           inv.SessionID,
+			Name:                inv.Name,
+			SystemPrompt:        systemPrompt,
+			Prompt:              prompt,
+			ForwardSubagentText: inv.Capabilities.ForwardSubagentText,
 		}
 		return "claude", claude.Args(), nil
 	}
@@ -69,15 +96,16 @@ func (inv agentInvocation) Command() (string, []string, error) {
 	if inv.Model != "" {
 		args = append(args, "--model", inv.Model)
 	}
+	if inv.Capabilities.MultiAgent {
+		args = append(args, "--enable", "multi_agent")
+	}
 	args = append(args, "exec")
-	prompt := inv.Prompt
+	systemPrompt, prompt := withDelegationRules(inv.SessionID, inv.SystemPrompt, inv.Prompt)
 	if inv.SessionID != "" {
 		args = append(args, "resume", "--json", "--skip-git-repo-check", inv.SessionID, prompt)
 		return "codex", args, nil
 	}
-	if inv.SystemPrompt != "" {
-		prompt = inv.SystemPrompt + "\n\n" + prompt
-	}
+	prompt = systemPrompt + "\n\n" + prompt
 	args = append(args, "--json", "--skip-git-repo-check", prompt)
 	return "codex", args, nil
 }

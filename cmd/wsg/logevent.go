@@ -1,11 +1,14 @@
 package main
 
+import "encoding/json"
+
 // streamEvent is one decoded line from a claude stream-json log.
 // Fields are nullable across event types; consumers branch on Type/Subtype.
 type streamEvent struct {
-	Type      string `json:"type"`
-	Subtype   string `json:"subtype"`
-	SessionID string `json:"session_id"`
+	Type            string          `json:"type"`
+	Subtype         string          `json:"subtype"`
+	SessionID       string          `json:"session_id"`
+	ParentToolUseID json.RawMessage `json:"parent_tool_use_id"`
 
 	// assistant message
 	Message *streamMessage `json:"message"`
@@ -35,11 +38,12 @@ type streamUsage struct {
 }
 
 type streamContent struct {
-	Type  string `json:"type"`
-	Text  string `json:"text"`
-	Name  string `json:"name"`
-	Input any    `json:"input"`
-	ID    string `json:"id"`
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Name      string `json:"name"`
+	Input     any    `json:"input"`
+	ID        string `json:"id"`
+	ToolUseID string `json:"tool_use_id"`
 }
 
 type streamTool struct {
@@ -62,19 +66,28 @@ type codexEvent struct {
 }
 
 type codexItem struct {
-	ID               string            `json:"id"`
-	Type             string            `json:"type"`
-	Text             string            `json:"text"`
-	Command          string            `json:"command"`
-	AggregatedOutput string            `json:"aggregated_output"`
-	Status           string            `json:"status"`
-	Server           string            `json:"server"`
-	Tool             string            `json:"tool"`
-	Query            string            `json:"query"`
-	Message          string            `json:"message"`
-	Changes          []codexFileChange `json:"changes"`
-	Items            []codexTodoItem   `json:"items"`
-	Error            *codexError       `json:"error"`
+	ID                string                     `json:"id"`
+	Type              string                     `json:"type"`
+	Text              string                     `json:"text"`
+	Command           string                     `json:"command"`
+	AggregatedOutput  string                     `json:"aggregated_output"`
+	Status            string                     `json:"status"`
+	Server            string                     `json:"server"`
+	Tool              string                     `json:"tool"`
+	Query             string                     `json:"query"`
+	Message           string                     `json:"message"`
+	Changes           []codexFileChange          `json:"changes"`
+	Items             []codexTodoItem            `json:"items"`
+	Error             *codexError                `json:"error"`
+	SenderThreadID    string                     `json:"sender_thread_id"`
+	ReceiverThreadIDs []string                   `json:"receiver_thread_ids"`
+	Prompt            string                     `json:"prompt"`
+	AgentsStates      map[string]codexAgentState `json:"agents_states"`
+}
+
+type codexAgentState struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 type codexFileChange struct {

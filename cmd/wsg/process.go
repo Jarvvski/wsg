@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // launch spawns the selected agent in the worker's workspace using inv. The handle must
@@ -23,9 +24,35 @@ func ensureExecutable(agent AgentKind) error {
 	return nil
 }
 
+func probeAgentCapabilities(dir string, agent AgentKind) agentCapabilities {
+	name := "codex"
+	args := []string{"features", "list"}
+	if agent == AgentClaude {
+		name = "claude"
+		args = []string{"--help"}
+	} else if agent != AgentCodex {
+		return agentCapabilities{}
+	}
+	output, _, err := runCapture(dir, name, args...)
+	if err != nil {
+		return agentCapabilities{}
+	}
+	if agent == AgentClaude {
+		return agentCapabilities{ForwardSubagentText: strings.Contains(output, "--forward-subagent-text")}
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "multi_agent" {
+			return agentCapabilities{MultiAgent: true}
+		}
+	}
+	return agentCapabilities{}
+}
+
 func (h *WorkerHandle) launch(inv agentInvocation, fg bool) (int, error) {
 	wspath := h.repo.workerDir(h.worker)
 	logFile := filepath.Join(h.repo.poolDir(), h.worker+".log")
+	inv.Capabilities = probeAgentCapabilities(wspath, inv.Agent)
 	name, args, err := inv.Command()
 	if err != nil {
 		return 0, err

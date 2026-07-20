@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,6 +113,153 @@ func TestRunClaudeBGFailure(t *testing.T) {
 	if loaded.Error == nil || *loaded.Error != "error_during_execution" {
 		t.Errorf("error = %v, want error_during_execution", loaded.Error)
 	}
+}
+
+func TestWorkerLaunchEnablesSupportedCodexDelegation(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, r := setupBusyHandle(t, dir, "worker-1", logFile)
+	if err := os.MkdirAll(r.workerDir("worker-1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(dir, "codex-args")
+	exe := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = features ]; then\n  printf '%s\\n' 'multi_agent stable false'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$ARGS_FILE\"\nprintf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{}}'\n"
+	if err := os.WriteFile(exe, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ARGS_FILE", argsFile)
+
+	if _, err := h.launch(agentInvocation{Agent: AgentCodex, Prompt: "work"}, true); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "--enable\nmulti_agent") {
+		t.Errorf("worker launch args missing multi_agent enablement: %s", args)
+	}
+}
+
+func TestWorkerLaunchContinuesWhenCapabilityProbeFails(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, r := setupBusyHandle(t, dir, "worker-1", logFile)
+	if err := os.MkdirAll(r.workerDir("worker-1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(dir, "codex-args")
+	exe := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = features ]; then\n  exit 1\nfi\nprintf '%s\\n' \"$@\" > \"$ARGS_FILE\"\nprintf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{}}'\n"
+	if err := os.WriteFile(exe, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ARGS_FILE", argsFile)
+
+	if _, err := h.launch(agentInvocation{Agent: AgentCodex, Prompt: "work"}, true); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(args), "multi_agent") {
+		t.Errorf("worker launch should omit unsupported optional flags: %s", args)
+	}
+}
+
+func TestWorkerWithChildProcessRemainsBusyUntilRootResult(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, r := setupBusyHandle(t, dir, "worker-1", logFile)
+	childPIDFile := filepath.Join(dir, "child.pid")
+	releaseFile := filepath.Join(dir, "release")
+	script := "sleep 30 & child=$!; printf '%s' \"$child\" > \"$CHILD_PID_FILE\"; while [ ! -f \"$RELEASE_FILE\" ]; do sleep 0.05; done; kill \"$child\"; wait \"$child\" 2>/dev/null; printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}'"
+	t.Setenv("CHILD_PID_FILE", childPIDFile)
+	t.Setenv("RELEASE_FILE", releaseFile)
+
+	rootPID, err := h.runBG(dir, logFile, []string{"sh", "-c", script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer killProcess(rootPID)
+	childPID := awaitPIDFile(t, childPIDFile)
+	if !processAlive(rootPID) || !processAlive(childPID) {
+		t.Fatalf("root %d and child %d should be alive", rootPID, childPID)
+	}
+	busy, err := loadWorkerState(r.workerStateFile("worker-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy.Status != WorkerStatusBusy {
+		t.Fatalf("status before root result = %q, want busy", busy.Status)
+	}
+
+	if err := os.WriteFile(releaseFile, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	terminal := awaitTerminal(t, r.workerStateFile("worker-1"))
+	if terminal.Status != WorkerStatusDone {
+		t.Errorf("status after root result = %q, want done", terminal.Status)
+	}
+}
+
+func TestResetTerminatesRuntimeProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, ".jj", "pool", "worker-1.log")
+	h, r := setupBusyHandle(t, dir, "worker-1", logFile)
+	childPIDFile := filepath.Join(dir, "child.pid")
+	script := "sleep 30 & child=$!; printf '%s' \"$child\" > \"$CHILD_PID_FILE\"; wait"
+	t.Setenv("CHILD_PID_FILE", childPIDFile)
+
+	rootPID, err := h.runBG(dir, logFile, []string{"sh", "-c", script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer killProcess(rootPID)
+	childPID := awaitPIDFile(t, childPIDFile)
+
+	if err := NewActions(r).Reset("worker-1"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for (processAlive(rootPID) || processAlive(childPID)) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if processAlive(rootPID) || processAlive(childPID) {
+		t.Errorf("runtime process group still alive after reset: root=%v child=%v", processAlive(rootPID), processAlive(childPID))
+	}
+	idle, err := loadWorkerState(r.workerStateFile("worker-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idle.Status != WorkerStatusIdle {
+		t.Errorf("worker status = %q, want idle", idle.Status)
+	}
+}
+
+func awaitPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for PID file %s", path)
+	return 0
 }
 
 // awaitTerminal polls a worker state file until it leaves the busy state.
