@@ -389,16 +389,7 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewInput
 		m.inputWorker = w.name
-		ta := textarea.New()
-		ta.Placeholder = "Message to " + displayWorker(w.name) + "..."
-		ta.Focus()
-		styleTextArea(&ta)
-		ta.SetHeight(3)
-		if m.width > 0 {
-			ta.SetWidth(m.width - 4)
-		} else {
-			ta.SetWidth(76)
-		}
+		ta := m.newMultilineTextArea("Message to " + displayWorker(w.name) + "...")
 		m.textArea = ta
 		m.status = "Enter to send, Shift+Enter for newline, Esc to cancel"
 		return m, ta.Focus()
@@ -417,14 +408,14 @@ func (m tuiModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewDispatch
 		m.dispatchWorker = w.name
-		m.dispatchArea = m.newTextArea("AMBA-42", 1)
-		m.status = fmt.Sprintf("Ticket for %s, Enter to dispatch, Esc to cancel", w.label())
+		m.dispatchArea = m.newMultilineTextArea("AMBA-42")
+		m.status = fmt.Sprintf("Ticket for %s, Enter to dispatch, Shift+Enter for newline, Esc to cancel", w.label())
 		return m, m.dispatchArea.Focus()
 	case "N":
 		m.view = viewDispatch
 		m.dispatchWorker = ""
-		m.dispatchArea = m.newTextArea("AMBA-42 AMBA-43 ...", 1)
-		m.status = "Ticket ID(s) for any idle worker, Enter to dispatch, Esc to cancel"
+		m.dispatchArea = m.newMultilineTextArea("AMBA-42 AMBA-43 ...")
+		m.status = "Ticket ID(s) for any idle worker, Enter to dispatch, Shift+Enter for newline, Esc to cancel"
 		return m, m.dispatchArea.Focus()
 	case "A":
 		m.status = "Fetching ready-for-agent tickets..."
@@ -950,6 +941,24 @@ func (m tuiModel) newTextArea(placeholder string, height int) textarea.Model {
 	} else {
 		ta.SetWidth(76)
 	}
+	return ta
+}
+
+const maxEditorHeight = 8
+
+// newMultilineTextArea builds an editor that grows with its content until it
+// reaches maxEditorHeight, then scrolls. Plain Enter remains reserved by the
+// parent view for submission, so only Shift+Enter inserts a newline.
+func (m tuiModel) newMultilineTextArea(placeholder string) textarea.Model {
+	ta := m.newTextArea(placeholder, 1)
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	// Preserve the textarea's existing content limit while using MaxHeight
+	// solely as the visible viewport cap.
+	ta.MaxContentHeight = ta.MaxHeight
+	ta.MaxHeight = maxEditorHeight
+	keys := append([]string(nil), ta.KeyMap.InsertNewline.Keys()...)
+	ta.KeyMap.InsertNewline.SetKeys(append(keys, "shift+enter")...)
 	return ta
 }
 

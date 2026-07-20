@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.7.1 - 2026-07-20
+
+### Fixed
+
+- **Compose multiline worker prompts in the TUI.** Ticket and message editors now insert a newline with Shift+Enter, grow to show up to eight lines, and scroll without truncating longer input while plain Enter still submits.
+
 ## 0.7.0 - 2026-07-20
 
 ### Added

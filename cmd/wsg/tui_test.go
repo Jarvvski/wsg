@@ -130,6 +130,10 @@ func keyPress(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
+func shiftEnter() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift}
+}
+
 func TestTUICursorNavigation(t *testing.T) {
 	r := setupTestPool(t, map[string]*WorkerState{
 		"worker-aaa": newIdleWorkerState(),
@@ -496,6 +500,126 @@ func TestTUIInputViewEscCancels(t *testing.T) {
 	m = updated.(tuiModel)
 	if m.view != viewList {
 		t.Errorf("after esc in input: view = %d, want viewList (%d)", m.view, viewList)
+	}
+}
+
+func TestTUIInputShiftEnterInsertsVisibleNewline(t *testing.T) {
+	logFile := "/tmp/test.log"
+	ticket := "AMBA-1"
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": {Status: WorkerStatusDone, Ticket: &ticket, LogFile: &logFile},
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('s'))
+	m = updated.(tuiModel)
+	m.textArea.SetValue("first line")
+
+	updated, _ = m.Update(shiftEnter())
+	m = updated.(tuiModel)
+	if m.view != viewInput {
+		t.Fatalf("shift+enter submitted input: view = %d, want viewInput (%d)", m.view, viewInput)
+	}
+	if got := m.textArea.Value(); got != "first line\n" {
+		t.Fatalf("textarea value = %q, want %q", got, "first line\n")
+	}
+	if got := m.textArea.Height(); got != 2 {
+		t.Fatalf("textarea height = %d, want 2", got)
+	}
+
+	updated, _ = m.Update(keyPress('x'))
+	m = updated.(tuiModel)
+	view := m.renderInput()
+	if !strings.Contains(view, "first line") || !strings.Contains(view, "x") {
+		t.Fatalf("input view does not show both lines:\n%s", view)
+	}
+}
+
+func TestTUIInputShowsAllEnteredLines(t *testing.T) {
+	logFile := "/tmp/test.log"
+	ticket := "AMBA-1"
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": {Status: WorkerStatusDone, Ticket: &ticket, LogFile: &logFile},
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('s'))
+	m = updated.(tuiModel)
+	m.textArea.SetValue("one\ntwo\nthree\nfour")
+
+	view := m.renderInput()
+	for _, line := range []string{"one", "two", "three", "four"} {
+		if !strings.Contains(view, line) {
+			t.Fatalf("input view does not show line %q:\n%s", line, view)
+		}
+	}
+	if got := m.textArea.Height(); got != 4 {
+		t.Fatalf("textarea height = %d, want 4", got)
+	}
+}
+
+func TestTUIDispatchShiftEnterInsertsVisibleNewline(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('N'))
+	m = updated.(tuiModel)
+	m.dispatchArea.SetValue("AMBA-1")
+
+	updated, _ = m.Update(shiftEnter())
+	m = updated.(tuiModel)
+	if m.view != viewDispatch {
+		t.Fatalf("shift+enter submitted dispatch: view = %d, want viewDispatch (%d)", m.view, viewDispatch)
+	}
+	if got := m.dispatchArea.Value(); got != "AMBA-1\n" {
+		t.Fatalf("dispatch textarea value = %q, want %q", got, "AMBA-1\n")
+	}
+	if got := m.dispatchArea.Height(); got != 2 {
+		t.Fatalf("dispatch textarea height = %d, want 2", got)
+	}
+
+	updated, _ = m.Update(keyPress('x'))
+	m = updated.(tuiModel)
+	view := m.renderDispatch()
+	if !strings.Contains(view, "AMBA-1") || !strings.Contains(view, "x") {
+		t.Fatalf("dispatch view does not show both lines:\n%s", view)
+	}
+}
+
+func TestTUIDispatchShowsAllEnteredLines(t *testing.T) {
+	r := setupTestPool(t, map[string]*WorkerState{
+		"worker-aaa": newIdleWorkerState(),
+	})
+
+	m := newTUIModel(r)
+	updated, _ := m.Update(keyPress('N'))
+	m = updated.(tuiModel)
+	m.dispatchArea.SetValue("AMBA-1\nAMBA-2")
+
+	view := m.renderDispatch()
+	for _, line := range []string{"AMBA-1", "AMBA-2"} {
+		if !strings.Contains(view, line) {
+			t.Fatalf("dispatch view does not show line %q:\n%s", line, view)
+		}
+	}
+	if got := m.dispatchArea.Height(); got != 2 {
+		t.Fatalf("dispatch textarea height = %d, want 2", got)
+	}
+}
+
+func TestTUIMultilineEditorsCapVisibleHeightWithoutTruncatingContent(t *testing.T) {
+	m := tuiModel{width: 80}
+	ta := m.newMultilineTextArea("message")
+	lines := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+	ta.SetValue(strings.Join(lines, "\n"))
+
+	if got := ta.Height(); got != maxEditorHeight {
+		t.Fatalf("textarea height = %d, want %d", got, maxEditorHeight)
+	}
+	if got := ta.Value(); got != strings.Join(lines, "\n") {
+		t.Fatalf("textarea content was truncated: got %q", got)
 	}
 }
 
