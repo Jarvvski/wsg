@@ -209,7 +209,7 @@ _wsg() {
             '--fg[run in foreground]' \
             '--all[dispatch all ready tickets]' \
             '--no-orchestrate[skip parent issue detection]' \
-            '--model[model]:model:(sonnet opus haiku)' \
+            '--model[override the selected agent model]:model:' \
             '--label[label filter]:label:' \
             '*:ticket:'
           ;;

@@ -7,21 +7,41 @@ import (
 
 // WorkerActions is the verb layer the CLI's cmd* functions and the TUI's
 // tea.Cmd closures share. Each method takes the worker name as the unit of
-// addressing and either mutates the worker state file or launches claude
+// addressing and either mutates the worker state file or launches an agent
 // against it. The CLI parses os.Args then calls an action; the TUI captures
 // the action inside a tea.Cmd closure and translates the result into a
 // *ResultMsg.
 //
 // Foreground/background is a per-call parameter on actions that launch a
 // process. The CLI plumbs it through resolveForeground at the parse edge;
-// the TUI always runs background. Neither path looks at config inside the
-// action - actions trust what they are given.
+// the TUI always runs background. Dispatch actions resolve the pool's agent
+// configuration once, then carry it through orchestration and worker launch.
 type WorkerActions struct {
 	repo *RepoContext
 }
 
 func NewActions(r *RepoContext) *WorkerActions {
 	return &WorkerActions{repo: r}
+}
+
+func (a *WorkerActions) resolveDispatchOpts(opts DispatchOpts) (DispatchOpts, error) {
+	if opts.Agent == "" {
+		agent, err := configuredAgent(a.repo)
+		if err != nil {
+			return opts, err
+		}
+		opts.Agent = agent
+	} else {
+		agent, err := parseAgent(string(opts.Agent))
+		if err != nil {
+			return opts, err
+		}
+		opts.Agent = agent
+	}
+	if opts.Agent == AgentClaude && opts.Model == "" {
+		opts.Model = "opus"
+	}
+	return opts, nil
 }
 
 // Send resumes worker on prompt, appending the send system prompt for fresh
@@ -117,11 +137,11 @@ type DispatchResult struct {
 // state, possibly terminal) and no Worker/PID; bulk-launched tickets carry
 // Worker/PID and no Group.
 type TicketOutcome struct {
-	Ticket        string
-	Worker        string
-	PID           int
-	Orchestrated  bool
-	Group         *DispatchGroup
+	Ticket       string
+	Worker       string
+	PID          int
+	Orchestrated bool
+	Group        *DispatchGroup
 }
 
 // Dispatch is the shared dispatch verb for CLI and TUI. A single ticket
@@ -136,6 +156,11 @@ type TicketOutcome struct {
 func (a *WorkerActions) Dispatch(tickets []string, opts DispatchOpts) (DispatchResult, error) {
 	if len(tickets) == 0 {
 		return DispatchResult{}, errors.New("no tickets to dispatch")
+	}
+	var err error
+	opts, err = a.resolveDispatchOpts(opts)
+	if err != nil {
+		return DispatchResult{}, err
 	}
 	orchestrate := !opts.NoOrchestrate && (len(tickets) == 1 || opts.OrchestrateEach)
 	if orchestrate {
@@ -152,6 +177,11 @@ func (a *WorkerActions) Dispatch(tickets []string, opts DispatchOpts) (DispatchR
 // ReserveWorker error writes no state; a launch error leaves the slot idle
 // because WorkerHandle.Dispatch resets it on any pre-launch failure.
 func (a *WorkerActions) DispatchTo(worker, ticket string, opts DispatchOpts) (TicketOutcome, error) {
+	var err error
+	opts, err = a.resolveDispatchOpts(opts)
+	if err != nil {
+		return TicketOutcome{}, err
+	}
 	p, err := OpenPool(a.repo)
 	if err != nil {
 		return TicketOutcome{}, fmt.Errorf("no pool: %w", err)
@@ -187,7 +217,12 @@ func (a *WorkerActions) Rename(worker, name string) error {
 // OrchestrateEach is honored: CLI --all leaves it false (atomic bulk path),
 // the TUI N-key sets it true (one orchestrator per ticket).
 func (a *WorkerActions) DispatchAll(opts DispatchOpts) ([]string, DispatchResult, error) {
-	tickets, err := linearReadyTickets(a.repo, opts.Label)
+	var err error
+	opts, err = a.resolveDispatchOpts(opts)
+	if err != nil {
+		return nil, DispatchResult{}, err
+	}
+	tickets, err := linearReadyTickets(a.repo, opts.Agent, opts.Label)
 	if err != nil {
 		return nil, DispatchResult{}, err
 	}

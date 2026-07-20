@@ -41,6 +41,7 @@ func (c *claudeInvocation) Args() []string {
 type DispatchOpts struct {
 	TicketID      string
 	Foreground    bool
+	Agent         AgentKind
 	Model         string
 	Label         string
 	NoOrchestrate bool
@@ -60,7 +61,6 @@ type DispatchOpts struct {
 
 func cmdDispatch(args []string) {
 	opts := DispatchOpts{
-		Model: "opus",
 		Label: "ready-for-agent",
 	}
 
@@ -156,7 +156,7 @@ func renderCLIDispatch(r *RepoContext, res DispatchResult, requested int, all bo
 		}
 		// Foreground launch returns PID 0 after WaitFinal; the original
 		// CLI suppressed the line entirely in that case so the user sees
-		// claude's terminal output, not a bogus "PID 0" trailer.
+		// the agent's terminal output, not a bogus "PID 0" trailer.
 		if o.PID == 0 {
 			continue
 		}
@@ -197,6 +197,7 @@ func renderOrchestratedOutcome(r *RepoContext, o TicketOutcome) {
 func intentFromOpts(opts *DispatchOpts, depCtx *DependencyContext) DispatchIntent {
 	return DispatchIntent{
 		Ticket:     opts.TicketID,
+		Agent:      opts.Agent,
 		Model:      opts.Model,
 		DepCtx:     depCtx,
 		Foreground: opts.Foreground,

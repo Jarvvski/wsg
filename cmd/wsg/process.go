@@ -1,18 +1,36 @@
 package main
 
 import (
+	"fmt"
+	"os/exec"
 	"path/filepath"
 )
 
-// launch spawns claude in the worker's workspace using inv. The handle must
+// launch spawns the selected agent in the worker's workspace using inv. The handle must
 // already be in busy state. In foreground mode the process runs to completion
 // and finalises the handle; the returned pid is 0. In background mode the pid
 // is returned and the handle is finalised asynchronously when the process
 // exits.
-func (h *WorkerHandle) launch(inv claudeInvocation, fg bool) (int, error) {
+func ensureExecutable(agent AgentKind) error {
+	resolved, err := parseAgent(string(agent))
+	if err != nil {
+		return err
+	}
+	name := string(resolved)
+	if _, err := exec.LookPath(name); err != nil {
+		return fmt.Errorf("%s executable not found in PATH", name)
+	}
+	return nil
+}
+
+func (h *WorkerHandle) launch(inv agentInvocation, fg bool) (int, error) {
 	wspath := h.repo.workerDir(h.worker)
 	logFile := filepath.Join(h.repo.poolDir(), h.worker+".log")
-	argv := append([]string{"claude"}, inv.Args()...)
+	name, args, err := inv.Command()
+	if err != nil {
+		return 0, err
+	}
+	argv := append([]string{name}, args...)
 	if fg {
 		h.runFG(wspath, logFile, argv)
 		return 0, nil
@@ -20,8 +38,8 @@ func (h *WorkerHandle) launch(inv claudeInvocation, fg bool) (int, error) {
 	return h.runBG(wspath, logFile, argv)
 }
 
-func (h *WorkerHandle) runFG(wspath, logFile string, claudeArgs []string) {
-	if _, err := startForeground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...); err != nil {
+func (h *WorkerHandle) runFG(wspath, logFile string, agentArgs []string) {
+	if _, err := startForeground(wspath, logFile, agentArgs[0], agentArgs[1:]...); err != nil {
 		_ = h.withWorkerLock(func() error {
 			h.state.MarkFailed(1, err.Error())
 			return h.save()
@@ -31,8 +49,8 @@ func (h *WorkerHandle) runFG(wspath, logFile string, claudeArgs []string) {
 	h.WaitFinal()
 }
 
-func (h *WorkerHandle) runBG(wspath, logFile string, claudeArgs []string) (int, error) {
-	pid, err := startBackground(wspath, logFile, claudeArgs[0], claudeArgs[1:]...)
+func (h *WorkerHandle) runBG(wspath, logFile string, agentArgs []string) (int, error) {
+	pid, err := startBackground(wspath, logFile, agentArgs[0], agentArgs[1:]...)
 	if err != nil {
 		_ = h.withWorkerLock(func() error {
 			h.state.MarkFailed(1, err.Error())

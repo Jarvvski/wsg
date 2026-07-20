@@ -94,6 +94,20 @@ func TestClaudeArgsFreshSend(t *testing.T) {
 	}
 }
 
+func TestDispatchPromptIsAgentNeutral(t *testing.T) {
+	system := buildDispatchSystemPrompt("owner/repo", "adam", "amba-42", nil)
+	worker := buildDispatchWorkerPrompt("AMBA-42", "a@example.com", "adam", "amba-42", "gh pr create")
+	combined := system + worker
+	for _, forbidden := range []string{"Generated with Claude Code", "invoke the /tdd skill", "After /tdd"} {
+		if strings.Contains(combined, forbidden) {
+			t.Errorf("prompt contains provider-specific instruction %q", forbidden)
+		}
+	}
+	if !strings.Contains(worker, "AGENTS.md") || !strings.Contains(system, "Linear MCP") {
+		t.Errorf("prompt is missing repository or Linear instructions")
+	}
+}
+
 func TestSyncDispatchGroup(t *testing.T) {
 	dir := t.TempDir()
 	poolDir := filepath.Join(dir, ".jj", "pool")
@@ -154,4 +168,3 @@ func TestSendSystemPrompt(t *testing.T) {
 		t.Error("prompt should mention jj")
 	}
 }
-

@@ -14,11 +14,12 @@ import (
 )
 
 type PoolConfig struct {
-	Size       int               `json:"size"`
-	GHRepo     string            `json:"gh_repo"`
-	Workers    []string          `json:"workers"`
-	CreatedAt  string            `json:"created_at"`
-	Foreground *bool             `json:"foreground,omitempty"`
+	Size       int       `json:"size"`
+	GHRepo     string    `json:"gh_repo"`
+	Workers    []string  `json:"workers"`
+	CreatedAt  string    `json:"created_at"`
+	Foreground *bool     `json:"foreground,omitempty"`
+	Agent      AgentKind `json:"agent,omitempty"`
 	// Names maps a worker id to a user-chosen display alias. Cosmetic only -
 	// it never changes the worker's id, workspace directory, or jj workspace
 	// name. Stored here (not in worker-N.json) so it survives the reset /

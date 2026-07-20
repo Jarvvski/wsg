@@ -39,6 +39,20 @@ func TestExtractSessionIDMissing(t *testing.T) {
 	}
 }
 
+func TestExtractCodexSessionID(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "worker.log")
+	os.WriteFile(logFile, []byte(`{"type":"thread.started","thread_id":"019f-thread"}`+"\n"), 0644)
+
+	sid, err := extractSessionID(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "019f-thread" {
+		t.Errorf("session id = %q", sid)
+	}
+}
+
 func TestExtractSessionIDPlainText(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "worker.log")

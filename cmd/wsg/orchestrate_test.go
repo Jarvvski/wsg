@@ -72,6 +72,43 @@ func TestReadLogResultErrorNoMessage(t *testing.T) {
 	}
 }
 
+func TestReadCodexLogResultSuccess(t *testing.T) {
+	path := writeLogFile(t,
+		`{"type":"thread.started","thread_id":"thread-1"}`,
+		`{"type":"item.completed","item":{"id":"item-1","type":"error","message":"non-fatal warning"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}`,
+	)
+	r := readLogResult(path)
+	if r == nil || r.Status != WorkerStatusDone {
+		t.Fatalf("result = %+v, want done", r)
+	}
+}
+
+func TestReadCodexLogResultIgnoresTrailingStderr(t *testing.T) {
+	path := writeLogFile(t,
+		`{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}`,
+		`warning: could not update PATH aliases`,
+	)
+	r := readLogResult(path)
+	if r == nil || r.Status != WorkerStatusDone {
+		t.Fatalf("result = %+v, want done", r)
+	}
+}
+
+func TestReadCodexLogResultFailure(t *testing.T) {
+	path := writeLogFile(t,
+		`{"type":"thread.started","thread_id":"thread-1"}`,
+		`{"type":"turn.failed","error":{"message":"approval denied"}}`,
+	)
+	r := readLogResult(path)
+	if r == nil || r.Status != WorkerStatusFailed {
+		t.Fatalf("result = %+v, want failed", r)
+	}
+	if r.Error == nil || *r.Error != "approval denied" {
+		t.Errorf("error = %v", r.Error)
+	}
+}
+
 func TestReadLogResultNotResult(t *testing.T) {
 	path := writeLogFile(t,
 		`{"type":"assistant","message":"still running..."}`,
@@ -879,7 +916,7 @@ func TestDispatchGroupRoundTrip(t *testing.T) {
 				Branch:    &branch,
 			},
 		},
-		Opts: DispatchGroupOpts{Model: "opus"},
+		Opts: DispatchGroupOpts{Agent: AgentCodex, Model: "gpt-test"},
 	}
 
 	saveDispatchGroup(path, dg)
@@ -890,8 +927,8 @@ func TestDispatchGroupRoundTrip(t *testing.T) {
 	if loaded.Parent != "AMBA-9" {
 		t.Errorf("parent = %q, want AMBA-9", loaded.Parent)
 	}
-	if loaded.Opts.Model != "opus" {
-		t.Errorf("model = %q, want opus", loaded.Opts.Model)
+	if loaded.Opts.Agent != AgentCodex || loaded.Opts.Model != "gpt-test" {
+		t.Errorf("opts = %+v, want persisted Codex runtime", loaded.Opts)
 	}
 	si := loaded.SubIssues["AMBA-10"]
 	if si == nil {
@@ -931,4 +968,3 @@ func TestIsMergedStatus(t *testing.T) {
 		}
 	}
 }
-

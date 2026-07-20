@@ -12,7 +12,7 @@ type resumeOpts struct {
 	Foreground   bool
 }
 
-// ResumeOutcome reports whether a resume call continued an existing claude
+// ResumeOutcome reports whether a resume call continued an existing agent
 // session or started a fresh one. A non-empty SessionID means the previous
 // run's context was inherited; a non-empty Reason means we tried to resume
 // but had to start fresh, so the caller can surface it instead of silently
@@ -38,7 +38,15 @@ func resumeWorker(r *RepoContext, worker string, opts resumeOpts) (ResumeOutcome
 
 	sessionID, reason := resolveSession(ws)
 
-	inv := claudeInvocation{
+	agent := ws.RuntimeAgent()
+	if ws.Agent == nil && (ws.LogFile == nil || *ws.LogFile == "") {
+		agent, err = configuredAgent(r)
+		if err != nil {
+			return ResumeOutcome{}, err
+		}
+	}
+	inv := agentInvocation{
+		Agent:     agent,
 		SessionID: sessionID,
 		Prompt:    opts.Prompt,
 	}
@@ -259,14 +267,31 @@ func cmdMount(args []string) {
 		}
 	}
 
-	var claudeCmd string
-	if sessionName != "" {
-		claudeCmd = fmt.Sprintf("claude --resume %s; exec zsh", sessionName)
+	agent := h.Status().RuntimeAgent()
+	if h.Status().Agent == nil && sessionName == "" {
+		agent, err = configuredAgent(r)
+		if err != nil {
+			fatal("%v", err)
+		}
+	}
+	if err := ensureExecutable(agent); err != nil {
+		fatal("%v", err)
+	}
+	var agentCmd string
+	if agent == AgentCodex {
+		base := "codex --sandbox workspace-write --ask-for-approval on-request"
+		if sessionName != "" {
+			agentCmd = fmt.Sprintf("%s resume %s; exec zsh", base, shellQuote(sessionName))
+		} else {
+			agentCmd = base + "; exec zsh"
+		}
+	} else if sessionName != "" {
+		agentCmd = fmt.Sprintf("claude --resume %s; exec zsh", shellQuote(sessionName))
 	} else {
-		claudeCmd = "claude; exec zsh"
+		agentCmd = "claude; exec zsh"
 	}
 
-	winID, err := v.NewTab(worker, wspath, claudeCmd)
+	winID, err := v.NewTab(worker, wspath, agentCmd)
 	if err != nil {
 		fatal("Failed to create kitty tab: %v", err)
 	}

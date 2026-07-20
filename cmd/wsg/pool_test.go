@@ -50,6 +50,7 @@ func TestMarkResumed(t *testing.T) {
 	branch := "adam/amba-42-fix-login"
 	ws := &WorkerState{
 		Status: WorkerStatusDone,
+		Agent:  agentPtr(AgentCodex),
 		Ticket: &ticket,
 		Branch: branch,
 	}
@@ -64,6 +65,9 @@ func TestMarkResumed(t *testing.T) {
 	}
 	if ws.Branch != "adam/amba-42-fix-login" {
 		t.Errorf("Branch = %q, want adam/amba-42-fix-login (resolved branch preserved across resume)", ws.Branch)
+	}
+	if ws.RuntimeAgent() != AgentCodex {
+		t.Errorf("agent = %q, want codex", ws.RuntimeAgent())
 	}
 	if ws.LogFile == nil || *ws.LogFile != "/tmp/worker-1.log" {
 		t.Errorf("logFile = %v, want /tmp/worker-1.log", ws.LogFile)
@@ -176,6 +180,7 @@ func TestReset(t *testing.T) {
 func TestMarkDispatchedJSONRoundTrip(t *testing.T) {
 	ws := newIdleWorkerState()
 	ws.MarkDispatched("AMBA-42", "/tmp/w.log", "amba-42")
+	ws.Agent = agentPtr(AgentCodex)
 	ws.SetPID(9999)
 
 	dir := t.TempDir()
@@ -195,6 +200,9 @@ func TestMarkDispatchedJSONRoundTrip(t *testing.T) {
 	if m["pid"] != float64(9999) {
 		t.Errorf("JSON pid = %v, want 9999", m["pid"])
 	}
+	if m["agent"] != "codex" {
+		t.Errorf("JSON agent = %v, want codex", m["agent"])
+	}
 	for _, key := range []string{"completed_at", "exit_code", "error"} {
 		val, exists := m[key]
 		if !exists {
@@ -210,6 +218,9 @@ func TestMarkDispatchedJSONRoundTrip(t *testing.T) {
 	}
 	if loaded.PID == nil || *loaded.PID != 9999 {
 		t.Errorf("loaded pid = %v, want 9999", loaded.PID)
+	}
+	if loaded.RuntimeAgent() != AgentCodex {
+		t.Errorf("loaded agent = %q, want codex", loaded.RuntimeAgent())
 	}
 }
 
@@ -230,7 +241,7 @@ func TestResetJSONRoundTrip(t *testing.T) {
 	if m["status"] != "idle" {
 		t.Errorf("JSON status = %v, want idle", m["status"])
 	}
-	for _, key := range []string{"ticket", "pid", "started_at", "completed_at", "log_file", "branch_name", "exit_code", "error"} {
+	for _, key := range []string{"agent", "ticket", "pid", "started_at", "completed_at", "log_file", "branch_name", "exit_code", "error"} {
 		val, exists := m[key]
 		if !exists {
 			t.Errorf("key %q missing from JSON", key)
@@ -432,22 +443,22 @@ func TestElapsedDisplay(t *testing.T) {
 		wantPrefix  string
 	}{
 		{
-			name:       "completed run",
-			startedAt:  "2026-05-20T14:00:00Z",
+			name:        "completed run",
+			startedAt:   "2026-05-20T14:00:00Z",
 			completedAt: strPtr("2026-05-20T14:07:55Z"),
-			wantPrefix: "7m 55s",
+			wantPrefix:  "7m 55s",
 		},
 		{
-			name:       "zero duration",
-			startedAt:  "2026-05-20T14:00:00Z",
+			name:        "zero duration",
+			startedAt:   "2026-05-20T14:00:00Z",
 			completedAt: strPtr("2026-05-20T14:00:00Z"),
-			wantPrefix: "0m 0s",
+			wantPrefix:  "0m 0s",
 		},
 		{
-			name:       "invalid start",
-			startedAt:  "not-a-date",
+			name:        "invalid start",
+			startedAt:   "not-a-date",
 			completedAt: nil,
-			wantPrefix: "-",
+			wantPrefix:  "-",
 		},
 	}
 	for _, tt := range tests {

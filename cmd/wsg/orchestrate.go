@@ -32,7 +32,8 @@ type SubIssueState struct {
 }
 
 type DispatchGroupOpts struct {
-	Model string `json:"model"`
+	Agent AgentKind `json:"agent,omitempty"`
+	Model string    `json:"model"`
 }
 
 type DependencyContext struct {
@@ -458,7 +459,7 @@ func BuildDispatchGroup(r *RepoContext, parent string, opts *DispatchOpts) (*Dis
 
 	info("Building dependency graph for %s...", parent)
 
-	entries, err := linearSubIssueGraph(r, parent, repo)
+	entries, err := linearSubIssueGraph(r, opts.Agent, parent, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -490,6 +491,7 @@ func BuildDispatchGroup(r *RepoContext, parent string, opts *DispatchOpts) (*Dis
 		GHRepo:    repo,
 		SubIssues: make(map[string]*SubIssueState),
 		Opts: DispatchGroupOpts{
+			Agent: opts.Agent,
 			Model: opts.Model,
 		},
 	}
@@ -544,6 +546,15 @@ func resolveExistingBranch(r *RepoContext, ticketID string) *string {
 // ── Orchestrated dispatch ──────────────────────────────────────────
 
 func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOpts) {
+	agent, err := parseAgent(string(dg.Opts.Agent))
+	if err != nil {
+		fatal("Invalid dispatch agent: %v", err)
+	}
+	opts.Agent = agent
+	opts.Model = dg.Opts.Model
+	if opts.Agent == AgentClaude && opts.Model == "" {
+		opts.Model = "opus"
+	}
 	p, err := OpenPool(r)
 	if err != nil {
 		fatal("No pool. Run: wsg pool create --size N")
@@ -599,8 +610,11 @@ func ptrOr(p *string, fallback string) string {
 
 func spawnOrchestrator(r *RepoContext, parent string, opts *DispatchOpts) error {
 	logFile := filepath.Join(r.poolDir(), "dispatch-"+strings.ToLower(parent)+".log")
-	_, err := startBackground(r.Root, logFile, "wsg", "__orchestrate", parent,
-		"--model", opts.Model)
+	args := []string{"__orchestrate", parent, "--agent", string(opts.Agent)}
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	_, err := startBackground(r.Root, logFile, "wsg", args...)
 	return err
 }
 
@@ -610,11 +624,14 @@ func cmdOrchestrate(args []string) {
 	}
 
 	parent := args[0]
-	opts := DispatchOpts{
-		Model: "opus",
-	}
+	opts := DispatchOpts{}
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "--agent":
+			if i+1 < len(args) {
+				opts.Agent = AgentKind(args[i+1])
+				i++
+			}
 		case "--model":
 			if i+1 < len(args) {
 				opts.Model = args[i+1]
@@ -627,6 +644,10 @@ func cmdOrchestrate(args []string) {
 	if err != nil {
 		fatal("Not in a jj repo")
 	}
+	opts, err = NewActions(r).resolveDispatchOpts(opts)
+	if err != nil {
+		fatal("Dispatch config: %v", err)
+	}
 
 	var dg *DispatchGroup
 	if existing := LoadLiveDispatchGroup(r, parent); existing != nil {
@@ -636,7 +657,7 @@ func cmdOrchestrate(args []string) {
 	}
 
 	// Reserve a worker up front so the TUI shows status=busy within
-	// milliseconds. BuildDispatchGroup runs a Claude+Linear MCP round-trip
+	// milliseconds. BuildDispatchGroup runs an agent+Linear MCP round-trip
 	// that can take several seconds; without this pre-reservation the
 	// worker state file isn't written until that call returns.
 	p, perr := OpenPool(r)
@@ -676,7 +697,7 @@ func cmdOrchestrate(args []string) {
 
 // releaseReservation returns a worker reserved by cmdOrchestrate back to
 // idle without killing any process - the reservation has only written
-// state, not launched claude yet.
+// state, not launched an agent yet.
 func releaseReservation(r *RepoContext, worker string) {
 	h, err := loadWorker(r, worker)
 	if err != nil {

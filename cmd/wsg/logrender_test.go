@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,55 @@ func TestFormatEventInvalidJSON(t *testing.T) {
 	})
 	if out != "not json at all\n" {
 		t.Errorf("got %q, want raw passthrough", out)
+	}
+}
+
+func TestFormatCodexEvents(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"thread.started","thread_id":"thread-1"}`, state)
+		formatEvent(`{"type":"item.started","item":{"id":"item-1","type":"command_execution","command":"go test ./..."}}`, state)
+		formatEvent(`{"type":"item.completed","item":{"id":"item-2","type":"agent_message","text":"Done"}}`, state)
+		formatEvent(`{"type":"turn.completed","usage":{"input_tokens":1200,"output_tokens":300}}`, state)
+	})
+	for _, want := range []string{"session started", "go test ./...", "Done", "done", "1k tokens"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestFormatCodexCommandFailureAfterStart(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"item.started","item":{"id":"item-1","type":"command_execution","command":"go test ./...","status":"in_progress"}}`, state)
+		formatEvent(`{"type":"item.completed","item":{"id":"item-1","type":"command_execution","command":"go test ./...","status":"failed"}}`, state)
+	})
+	if !strings.Contains(out, "Command failed") {
+		t.Errorf("completion failure hidden: %q", out)
+	}
+}
+
+func TestFormatCodexMCPFailureAfterStart(t *testing.T) {
+	origTTY := isTTY
+	isTTY = false
+	defer func() { isTTY = origTTY }()
+	state := &logState{seen: make(map[string]bool)}
+
+	out := captureOutput(func() {
+		formatEvent(`{"type":"item.started","item":{"id":"item-1","type":"mcp_tool_call","server":"linear","tool":"save_issue","status":"in_progress"}}`, state)
+		formatEvent(`{"type":"item.completed","item":{"id":"item-1","type":"mcp_tool_call","server":"linear","tool":"save_issue","status":"failed","error":{"message":"approval denied"}}}`, state)
+	})
+	if !strings.Contains(out, "linear.save_issue failed") || !strings.Contains(out, "approval denied") {
+		t.Errorf("MCP completion failure hidden: %q", out)
 	}
 }
 

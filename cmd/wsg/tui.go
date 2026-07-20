@@ -728,7 +728,6 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
 		opts := DispatchOpts{
-			Model:           "opus",
 			OrchestrateEach: true,
 		}
 		res, err := NewActions(repo).Dispatch(tickets, opts)
@@ -745,7 +744,11 @@ func (m tuiModel) doDispatchBatch(tickets []string) tea.Cmd {
 func (m tuiModel) doFetchAll() tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		tickets, err := linearReadyTickets(repo, "ready-for-agent")
+		agent, err := configuredAgent(repo)
+		if err != nil {
+			return fetchAllResultMsg{err: err}
+		}
+		tickets, err := linearReadyTickets(repo, agent, "ready-for-agent")
 		if err != nil {
 			return fetchAllResultMsg{err: err}
 		}
@@ -760,7 +763,7 @@ func (m tuiModel) doFetchAll() tea.Cmd {
 func (m tuiModel) doDispatchTo(worker, ticket string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		opts := DispatchOpts{Model: "opus", NoOrchestrate: true}
+		opts := DispatchOpts{NoOrchestrate: true}
 		out, err := NewActions(repo).DispatchTo(worker, ticket, opts)
 		if err != nil {
 			return dispatchResultMsg{ticket: ticket, worker: worker, err: err}
@@ -772,7 +775,7 @@ func (m tuiModel) doDispatchTo(worker, ticket string) tea.Cmd {
 func (m tuiModel) doDispatch(ticket string) tea.Cmd {
 	repo := m.repo
 	return func() tea.Msg {
-		opts := DispatchOpts{Model: "opus"}
+		opts := DispatchOpts{}
 		res, err := NewActions(repo).Dispatch([]string{ticket}, opts)
 		if err != nil {
 			return dispatchResultMsg{ticket: ticket, err: err}

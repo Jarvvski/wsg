@@ -18,6 +18,13 @@ type logState struct {
 }
 
 func formatEvent(line string, state *logState) {
+	var kind struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(line), &kind) == nil && isCodexEventType(kind.Type) {
+		formatCodexEvent(line, state)
+		return
+	}
 	var ev streamEvent
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
 		fmt.Println(line)
@@ -137,6 +144,12 @@ func formatEvent(line string, state *logState) {
 }
 
 func formatEventToString(line string, state *logState) string {
+	var kind struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(line), &kind) == nil && isCodexEventType(kind.Type) {
+		return formatCodexEventToString(line, state)
+	}
 	var ev streamEvent
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
 		return line
@@ -181,6 +194,137 @@ func formatEventToString(line string, state *logState) string {
 			ev.NumTurns,
 			cost,
 		)
+	}
+	return ""
+}
+
+func isCodexEventType(eventType string) bool {
+	switch eventType {
+	case "thread.started", "turn.started", "turn.completed", "turn.failed", "item.started", "item.updated", "item.completed", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func formatCodexEvent(line string, state *logState) {
+	formatted := formatCodexEventToString(line, state)
+	if formatted != "" {
+		fmt.Println(formatted)
+	}
+}
+
+func formatCodexEventToString(line string, state *logState) string {
+	var ev codexEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return line
+	}
+	switch ev.Type {
+	case "thread.started":
+		return colorize("--- session started ---", colorDim)
+	case "item.started", "item.updated", "item.completed":
+		if ev.Item == nil {
+			return ""
+		}
+		key := "codex:" + ev.Item.ID
+		switch ev.Item.Type {
+		case "agent_message":
+			if ev.Item.Text == "" || state.seen[key+":"+ev.Item.Text] {
+				return ""
+			}
+			state.seen[key+":"+ev.Item.Text] = true
+			return ev.Item.Text
+		case "command_execution":
+			if ev.Item.Command == "" {
+				return ""
+			}
+			if ev.Type == "item.completed" && (ev.Item.Status == "failed" || ev.Item.Status == "declined") {
+				state.seen[key+":completed"] = true
+				return colorize("Command "+ev.Item.Status, colorRed) + " " + colorize(ev.Item.Command, colorDim)
+			}
+			if state.seen[key+":started"] {
+				return ""
+			}
+			state.seen[key+":started"] = true
+			return colorize("Command", colorYellow) + " " + colorize(ev.Item.Command, colorDim)
+		case "mcp_tool_call":
+			name := strings.Trim(strings.Join([]string{ev.Item.Server, ev.Item.Tool}, "."), ".")
+			if ev.Type == "item.completed" && ev.Item.Status == "failed" {
+				msg := ""
+				if ev.Item.Error != nil {
+					msg = " " + ev.Item.Error.Message
+				}
+				state.seen[key+":completed"] = true
+				return colorize(name+" failed", colorRed) + msg
+			}
+			if state.seen[key+":started"] {
+				return ""
+			}
+			state.seen[key+":started"] = true
+			return colorize(name, colorYellow)
+		case "web_search":
+			if state.seen[key] {
+				return ""
+			}
+			state.seen[key] = true
+			return colorize("WebSearch", colorYellow) + " " + colorize(ev.Item.Query, colorDim)
+		case "file_change":
+			if ev.Type != "item.completed" || state.seen[key] {
+				return ""
+			}
+			state.seen[key] = true
+			paths := make([]string, 0, len(ev.Item.Changes))
+			for _, change := range ev.Item.Changes {
+				paths = append(paths, change.Path)
+			}
+			return strings.TrimSpace(colorize("File changes", colorYellow) + " " + strings.Join(paths, ", "))
+		case "error":
+			if ev.Type != "item.completed" || state.seen[key] {
+				return ""
+			}
+			state.seen[key] = true
+			return colorize("warning", colorYellow) + " " + ev.Item.Message
+		case "reasoning":
+			if ev.Item.Text == "" || state.seen[key+":"+ev.Item.Text] {
+				return ""
+			}
+			state.seen[key+":"+ev.Item.Text] = true
+			return colorize(ev.Item.Text, colorDim)
+		case "todo_list":
+			if state.seen[key+":"+ev.Type] {
+				return ""
+			}
+			state.seen[key+":"+ev.Type] = true
+			completed := 0
+			for _, item := range ev.Item.Items {
+				if item.Completed {
+					completed++
+				}
+			}
+			return fmt.Sprintf("%s %d/%d", colorize("Plan", colorYellow), completed, len(ev.Item.Items))
+		case "collab_tool_call":
+			if state.seen[key+":"+ev.Type] {
+				return ""
+			}
+			state.seen[key+":"+ev.Type] = true
+			return colorize("Collab", colorYellow) + " " + ev.Item.Tool
+		}
+	case "turn.completed":
+		usage := ""
+		if ev.Usage != nil {
+			total := ev.Usage.InputTokens + ev.Usage.OutputTokens
+			usage = fmt.Sprintf(", %dk tokens", total/1000)
+		}
+		return fmt.Sprintf("%s %s%s", colorize("---", colorDim), colorize("done", colorGreen), usage)
+	case "turn.failed", "error":
+		msg := ev.Message
+		if ev.Error != nil && ev.Error.Message != "" {
+			msg = ev.Error.Message
+		}
+		if msg == "" {
+			msg = ev.Type
+		}
+		return fmt.Sprintf("%s %s: %s", colorize("---", colorDim), colorize("error", colorRed), msg)
 	}
 	return ""
 }

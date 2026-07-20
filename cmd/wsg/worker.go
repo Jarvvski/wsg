@@ -18,6 +18,7 @@ import (
 // WorkerHandle.Branch(), which scans jj on first read and persists.
 type WorkerState struct {
 	Status      WorkerStatus
+	Agent       *AgentKind
 	Ticket      *string
 	PID         *int
 	StartedAt   *string
@@ -32,6 +33,7 @@ type WorkerState struct {
 // resolved-then-prefix; all other fields mirror WorkerState 1:1.
 type workerStateWire struct {
 	Status      WorkerStatus `json:"status"`
+	Agent       *AgentKind   `json:"agent"`
 	Ticket      *string      `json:"ticket"`
 	PID         *int         `json:"pid"`
 	StartedAt   *string      `json:"started_at"`
@@ -45,6 +47,7 @@ type workerStateWire struct {
 func (ws *WorkerState) MarshalJSON() ([]byte, error) {
 	w := workerStateWire{
 		Status:      ws.Status,
+		Agent:       ws.Agent,
 		Ticket:      ws.Ticket,
 		PID:         ws.PID,
 		StartedAt:   ws.StartedAt,
@@ -63,6 +66,7 @@ func (ws *WorkerState) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	ws.Status = w.Status
+	ws.Agent = w.Agent
 	ws.Ticket = w.Ticket
 	ws.PID = w.PID
 	ws.StartedAt = w.StartedAt
@@ -129,6 +133,17 @@ func (ws *WorkerState) SetPID(pid int) {
 
 func (ws *WorkerState) Reset() {
 	*ws = WorkerState{Status: WorkerStatusIdle}
+}
+
+func (ws *WorkerState) RuntimeAgent() AgentKind {
+	if ws.Agent == nil {
+		return AgentClaude
+	}
+	agent, err := parseAgent(string(*ws.Agent))
+	if err != nil {
+		return AgentClaude
+	}
+	return agent
 }
 
 func (ws *WorkerState) MarkResumed(logFile string) {
@@ -254,16 +269,17 @@ func (h *WorkerHandle) Status() *WorkerState {
 // the worker is running, the model to run it on, optional dependency
 // context for a stacked branch, and whether to run in foreground. The
 // handle owns everything else - workspace prep, identity lookup, prompt
-// build, claude launch - so dispatch.go is a pure CLI shell.
+// build, agent launch - so dispatch.go is a pure CLI shell.
 type DispatchIntent struct {
 	Ticket     string
+	Agent      AgentKind
 	Model      string
 	DepCtx     *DependencyContext
 	Foreground bool
 }
 
 // Dispatch prepares the worker's workspace, builds the agent prompts from
-// repo identity, and launches claude. The worker must already be in busy
+// repo identity, and launches the selected agent. The worker must already be in busy
 // state - Pool.Claim sets the ticket/log/branch fields atomically before
 // returning the worker name. On any pre-launch failure the worker is reset
 // to idle so the slot stays usable; the returned error carries the cause.
@@ -273,6 +289,20 @@ type DispatchIntent struct {
 // the process exits.
 func (h *WorkerHandle) Dispatch(intent DispatchIntent) (int, error) {
 	wspath := h.repo.workerDir(h.worker)
+	agent, err := parseAgent(string(intent.Agent))
+	if err != nil {
+		h.reset()
+		return 0, err
+	}
+	if err := ensureExecutable(agent); err != nil {
+		h.reset()
+		return 0, err
+	}
+	h.state.Agent = agentPtr(agent)
+	if err := h.save(); err != nil {
+		h.reset()
+		return 0, err
+	}
 
 	baseRevs := []string{"main"}
 	if intent.DepCtx != nil && len(intent.DepCtx.BaseBranches) > 0 {
@@ -301,7 +331,8 @@ func (h *WorkerHandle) Dispatch(intent DispatchIntent) (int, error) {
 	prCreateCmd := ghPRCreateCmd(repo, intent.Ticket, intent.DepCtx)
 	workerPrompt := buildDispatchWorkerPrompt(intent.Ticket, userEmail, branchPrefix, ticketLower, prCreateCmd)
 
-	inv := claudeInvocation{
+	inv := agentInvocation{
+		Agent:        agent,
 		Model:        intent.Model,
 		Name:         fmt.Sprintf("pool:%s:%s", h.worker, intent.Ticket),
 		SystemPrompt: systemPrompt,
@@ -311,11 +342,20 @@ func (h *WorkerHandle) Dispatch(intent DispatchIntent) (int, error) {
 }
 
 // Resume marks a non-busy worker busy on a fresh log file and launches
-// claude. Caller is expected to have built inv with SessionID extracted
+// the selected agent. Caller is expected to have built inv with SessionID extracted
 // from the previous run's log (via extractSessionID on Status().LogFile)
-// so claude resumes the same session rather than starting fresh.
-func (h *WorkerHandle) Resume(inv claudeInvocation, fg bool) (int, error) {
+// so the agent resumes the same session rather than starting fresh.
+func (h *WorkerHandle) Resume(inv agentInvocation, fg bool) (int, error) {
+	agent, err := parseAgent(string(inv.Agent))
+	if err != nil {
+		return 0, err
+	}
+	if err := ensureExecutable(agent); err != nil {
+		return 0, err
+	}
+	inv.Agent = agent
 	logFile := filepath.Join(h.repo.poolDir(), h.worker+".log")
+	h.state.Agent = agentPtr(agent)
 	h.state.MarkResumed(logFile)
 	if err := h.save(); err != nil {
 		return 0, err

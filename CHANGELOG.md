@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.7.0 - 2026-07-20
+
+### Added
+
+- **Choose Claude Code or Codex per worker pool.** Set `"agent": "codex"` in `.jj/pool.json` to use Codex for Linear discovery, dispatch, follow-up sessions, review, mounting, and structured logs. Existing pools default to Claude Code, active workers retain their original runtime, and Codex inherits its configured model unless `--model` overrides it.
+
 ## 0.6.0 - 2026-06-17
 
 ### Added

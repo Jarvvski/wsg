@@ -26,7 +26,7 @@ CRITICAL RULES:
 - You have access to Linear MCP tools for fetching ticket details and updating status.
 - Do NOT ask questions. Make reasonable decisions and proceed.
 - If you encounter ambiguity, document your assumptions in the PR description.
-- Do NOT add a "Generated with Claude Code" footer or any AI attribution to PRs, commits, or comments.`, repo, branchPrefix, ticketLower, branchPrefix)
+- Do NOT add any AI attribution to PRs, commits, or comments.`, repo, branchPrefix, ticketLower, branchPrefix)
 
 	if depCtx != nil && depCtx.Context != "" {
 		prompt += fmt.Sprintf(`
@@ -52,12 +52,12 @@ func buildDispatchWorkerPrompt(ticketID, userEmail, branchPrefix, ticketLower, p
 3. Derive a branch name from the ticket title in the format: %s/%s-<short-description>
    Use lowercase, hyphens, max 4 words from the title. Example: %s/amba-42-supplier-contact-sync
 
-4. Read CLAUDE.md and relevant source files to understand the codebase and conventions.
+4. Read the repository's agent instruction files (AGENTS.md, CLAUDE.md, or equivalents) and relevant source files to understand the codebase and conventions.
 
-5. Implement using TDD: invoke the /tdd skill with the ticket requirements as context.
-   Let the skill drive the red-green-refactor loop until acceptance criteria are met.
+5. Implement using TDD: use the repository's TDD skill or workflow with the ticket requirements as context.
+   Let that workflow drive the red-green-refactor loop until acceptance criteria are met.
 
-6. After /tdd completes, run the full check suite: linting, type checking, and all tests. Fix any issues.
+6. After the TDD workflow completes, run the full check suite: linting, type checking, and all tests. Fix any issues.
 
 7. Describe your changes: jj describe -m "%s: <concise summary of what you implemented>"
 

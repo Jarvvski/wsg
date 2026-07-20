@@ -7,24 +7,26 @@ import (
 	"time"
 )
 
-// linear.go is the single seam onto Linear-via-claude queries. Every Linear
+// linear.go is the single seam onto agent-backed Linear queries. Every Linear
 // MCP prompt outside this file is a bug - call one of the verbs below
 // instead.
 //
-// The verbs build the prompt, drive claudeQuery, and return parsed values.
+// The verbs build the prompt, drive the configured agent query, and return parsed values.
 // The Linear MCP allowed-tools list and the response shapes live here so
 // callers do not re-state them.
 
 const linearAllowedTools = "mcp__claude_ai_Linear__list_issues,mcp__claude_ai_Linear__get_issue"
 
+var runLinearQuery = agentQuery
+
 // linearReadyTickets queries Linear for Todo-state issues with the given
 // label on the Ameba team and returns the bare ticket identifiers.
-func linearReadyTickets(r *RepoContext, label string) ([]string, error) {
+func linearReadyTickets(r *RepoContext, agent AgentKind, label string) ([]string, error) {
 	prompt := fmt.Sprintf(
 		"Use the Linear MCP list_issues tool to find issues with label '%s' that are in 'Todo' state for the Ameba team. Return ONLY the issue identifiers (e.g. AMBA-42) as a JSON array in this exact format: {\"tickets\": [\"AMBA-1\", \"AMBA-2\"]}",
 		label,
 	)
-	output, err := claudeQuery(r.Root, prompt, linearAllowedTools)
+	output, err := runLinearQuery(r.Root, agent, prompt, linearAllowedTools)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +66,7 @@ var linearSubIssueGraphRetryDelay = 500 * time.Millisecond
 // model returning unparseable JSON), and the parsed map is validated to
 // drop malformed rows so a partly-broken response still moves work forward
 // instead of killing the whole batch.
-func linearSubIssueGraph(r *RepoContext, parent, repo string) (map[string]linearSubIssueEntry, error) {
+func linearSubIssueGraph(r *RepoContext, agent AgentKind, parent, repo string) (map[string]linearSubIssueEntry, error) {
 	prompt := fmt.Sprintf(`Fetch the parent-child sub-issue graph for Linear issue %s.
 
 Steps:
@@ -100,14 +102,14 @@ CRITICAL constraints (read carefully):
 - Include ALL children from step 1 even if they have no blockers.`, parent, parent, parent, parent, parent, parent, parent, parent, parent, repo)
 
 	query := func(p string) (string, error) {
-		return claudeQuery(r.Root, p, linearAllowedTools)
+		return runLinearQuery(r.Root, agent, p, linearAllowedTools)
 	}
 	return fetchSubIssueGraph(parent, prompt, query)
 }
 
 // fetchSubIssueGraph runs the query once, retries on transient failure,
 // then validates the parsed map. The query callable is the testable seam:
-// production passes claudeQuery; tests pass a deterministic stub.
+// production passes the configured agent query; tests pass a deterministic stub.
 func fetchSubIssueGraph(parent, prompt string, query func(string) (string, error)) (map[string]linearSubIssueEntry, error) {
 	entries, err := parseSubIssueGraphOnce(query, prompt)
 	if err != nil {

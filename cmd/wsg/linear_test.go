@@ -54,6 +54,27 @@ func TestParseLinearTickets(t *testing.T) {
 	}
 }
 
+func TestLinearReadyTicketsUsesSelectedAgent(t *testing.T) {
+	original := runLinearQuery
+	defer func() { runLinearQuery = original }()
+	var gotAgent AgentKind
+	runLinearQuery = func(_ string, agent AgentKind, _, _ string) (string, error) {
+		gotAgent = agent
+		return `{"tickets":["AMBA-42"]}`, nil
+	}
+
+	tickets, err := linearReadyTickets(&RepoContext{Root: t.TempDir()}, AgentCodex, "ready-for-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAgent != AgentCodex {
+		t.Errorf("agent = %q, want codex", gotAgent)
+	}
+	if len(tickets) != 1 || tickets[0] != "AMBA-42" {
+		t.Errorf("tickets = %v", tickets)
+	}
+}
+
 func TestValidateSubIssueEntries(t *testing.T) {
 	tests := []struct {
 		name    string

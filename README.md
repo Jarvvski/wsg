@@ -1,6 +1,6 @@
 # wsg
 
-A workspace manager for [Jujutsu](https://jj-vcs.github.io/jj/) repos. Manages workspaces, a worker pool, and dispatches GitHub issues to Claude Code agents.
+A workspace manager for [Jujutsu](https://jj-vcs.github.io/jj/) repos. Manages workspaces, a worker pool, and dispatches GitHub issues to Claude Code or Codex agents.
 
 ## Requirements
 
@@ -8,7 +8,7 @@ A workspace manager for [Jujutsu](https://jj-vcs.github.io/jj/) repos. Manages w
 |------|---------|---------|
 | [Go](https://go.dev/) 1.26+ | Build wsg | `brew install go` |
 | [jj](https://jj-vcs.github.io/jj/) | Version control (workspaces, branches, push) | `brew install jj` |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Headless agent runtime for workers | `brew install claude-code` |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://developers.openai.com/codex/cli) | Headless agent runtime for workers | Install the selected runtime |
 | [gh](https://cli.github.com/) | GitHub PR creation from dispatched agents | `brew install gh` |
 
 Optional:
@@ -52,7 +52,7 @@ wsg refresh                   # rebuild workspace cache
 
 ### Worker pool
 
-A pool of jj workspaces that can run Claude Code agents in parallel.
+A pool of jj workspaces that can run coding agents in parallel.
 
 ```bash
 wsg pool <N>                  # set pool size (creates pool if needed)
@@ -65,14 +65,14 @@ wsg status                    # alias for pool list
 
 ### Dispatch
 
-Assign GitHub issues to idle workers. Workers run Claude Code agents that read the issue, implement the work in their workspace, and open a PR.
+Assign GitHub issues to idle workers. Workers run the configured agent, read the issue, implement the work in their workspace, and open a PR.
 
 ```bash
 wsg dispatch <TICKET>...             # assign ticket(s) to idle workers (background)
 wsg dispatch <TICKET> --fg           # assign and watch in foreground
 wsg dispatch --all                   # dispatch all ready-for-agent tickets
 wsg dispatch --all --label <LABEL>   # filter by label (default: ready-for-agent)
-wsg dispatch --model <MODEL>         # model for agents (default: opus)
+wsg dispatch --model <MODEL>         # override the selected agent's model
 wsg dispatch --budget <USD>          # max spend per worker (default: 20)
 ```
 
@@ -81,7 +81,7 @@ Parent issues with sub-issues are detected automatically and dispatched in depen
 ```bash
 wsg send <worker> "<prompt>"  # resume worker session with a follow-up prompt
 wsg review <worker>           # address PR review comments in worker session
-wsg mount <worker>            # open worker in kitty (claude + two shells)
+wsg mount <worker>            # open worker in kitty (agent + two shells)
 wsg logs <worker>             # tail a worker's log file
 ```
 
@@ -96,25 +96,35 @@ Running `wsg` with no arguments in a TTY with an active pool launches a Bubblete
 eval "$(wsg completion zsh)"
 ```
 
-## How it uses Claude Code
+## Agent runtime
 
-wsg treats [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as a headless agent runtime. Each worker gets its own jj workspace and runs `claude` as a background process with `--output-format stream-json` for structured log output.
+wsg supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://developers.openai.com/codex/cli) as headless agent runtimes. Configure the runtime in the repository's `.jj/pool.json`:
+
+```json
+{
+  "agent": "codex"
+}
+```
+
+The field accepts `claude` or `codex` and defaults to `claude` when omitted. `cx` is a shell alias, so wsg invokes the real `codex` executable. Claude defaults to `opus`; Codex inherits its configured model unless `wsg dispatch --model` overrides it.
+
+The selected runtime also performs Linear ticket discovery and dependency queries. Codex therefore requires an authenticated Linear MCP server in its configuration. Background workers run without approval prompts, so the Linear MCP policy must allow the ticket updates used by the dispatch workflow.
 
 ### Dispatch workflow
 
 When you run `wsg dispatch TICKET-123`:
 
 1. An idle worker is claimed and its workspace is prepared (rebased onto trunk)
-2. wsg constructs a prompt that tells Claude to fetch the ticket via Linear MCP, read the codebase, implement the change, run checks, push a branch with `jj git push`, and open a PR with `gh`
-3. Claude runs in the worker's workspace directory with `--model opus` (configurable) and `--max-budget-usd 20` (configurable)
-4. The worker state file tracks PID, status, ticket, branch name, and cost
+2. wsg constructs a prompt that tells the agent to fetch the ticket via Linear MCP, read the codebase, implement the change, run checks, push a branch with `jj git push`, and open a PR with `gh`
+3. The agent runs in the worker's workspace directory and streams structured JSON events to its log
+4. The worker state file tracks the runtime, PID, status, ticket, and branch name
 5. On completion the worker moves to `done` or `failed`
 
-Claude has access to Linear and GitHub MCP tools for reading tickets and managing PRs, but all version control goes through `jj` - never `git`.
+The agent has access to Linear and GitHub tools for reading tickets and managing PRs, but all version control goes through `jj` - never `git`.
 
 ### Orchestration
 
-Parent issues with sub-issues are automatically detected. wsg uses a lightweight Claude call (`--model haiku`) to resolve the dependency graph, then dispatches sub-issues in waves:
+Parent issues with sub-issues are automatically detected. wsg uses the configured agent to resolve the dependency graph, then dispatches sub-issues in waves:
 
 - Sub-issues with no blockers dispatch first
 - Each subsequent wave bases its workspace on the prerequisite branch, producing stacked PRs
@@ -123,11 +133,11 @@ Parent issues with sub-issues are automatically detected. wsg uses a lightweight
 
 ### Session resume
 
-Every Claude session ID is extracted from the worker's stream-json log. This enables follow-up interactions without losing context:
+Every agent session ID is extracted from the worker's structured log. The agent used for the original workload is persisted with the worker so follow-up interactions keep the same runtime even if `pool.json` changes:
 
-- `wsg send <worker> "prompt"` - resume the session with a new instruction (forks the session so the original is preserved)
-- `wsg review <worker>` - fetches unresolved PR review comments and asks Claude to address them
-- `wsg mount <worker>` - opens the worker in a kitty terminal with the Claude session and two shell panes
+- `wsg send <worker> "prompt"` - resume the session with a new instruction
+- `wsg review <worker>` - fetches unresolved PR review comments and asks the agent to address them
+- `wsg mount <worker>` - opens the worker in a kitty terminal with the agent session and two shell panes
 
 ### TUI
 
