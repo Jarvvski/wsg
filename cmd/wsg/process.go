@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -67,9 +68,8 @@ func (h *WorkerHandle) launch(inv agentInvocation, fg bool) (int, error) {
 
 func (h *WorkerHandle) runFG(wspath, logFile string, agentArgs []string) {
 	if _, err := startForeground(wspath, logFile, agentArgs[0], agentArgs[1:]...); err != nil {
-		_ = h.withWorkerLock(func() error {
-			h.state.MarkFailed(1, err.Error())
-			return h.save()
+		_ = h.update(func(state *WorkerState) {
+			state.MarkFailed(1, err.Error())
 		})
 		return
 	}
@@ -79,14 +79,16 @@ func (h *WorkerHandle) runFG(wspath, logFile string, agentArgs []string) {
 func (h *WorkerHandle) runBG(wspath, logFile string, agentArgs []string) (int, error) {
 	pid, err := startBackground(wspath, logFile, agentArgs[0], agentArgs[1:]...)
 	if err != nil {
-		_ = h.withWorkerLock(func() error {
-			h.state.MarkFailed(1, err.Error())
-			return h.save()
+		_ = h.update(func(state *WorkerState) {
+			state.MarkFailed(1, err.Error())
 		})
 		return 0, err
 	}
 	h.state.SetPID(pid)
-	h.save()
+	if err := h.save(); err != nil {
+		killProcess(pid)
+		return 0, err
+	}
 
 	// Re-open from disk in the supervisor so it sees the saved PID and
 	// doesn't share a state pointer with the main goroutine.
@@ -122,18 +124,20 @@ func (h *WorkerHandle) checkLiveness() {
 // that may write a terminal state - WaitFinal after a process exit and
 // checkLiveness on a stale dead-PID read - so the two cannot race.
 func (h *WorkerHandle) finalizeUnderLock() {
-	_ = h.withWorkerLock(func() error {
-		ws, err := loadWorkerState(h.path)
-		if err != nil {
-			return nil
+	for attempts := 0; attempts < 2; attempts++ {
+		fresh, err := loadWorker(h.repo, h.worker)
+		if err != nil || fresh.state.Status != WorkerStatusBusy {
+			return
 		}
-		h.state = ws
-		if h.state.Status != WorkerStatusBusy {
-			return nil
+		fresh.finalizeFromLog()
+		if err := fresh.save(); err == nil {
+			h.state = fresh.state
+			h.revision = fresh.revision
+			return
+		} else if !errors.Is(err, errStateConflict) {
+			return
 		}
-		h.finalizeFromLog()
-		return nil
-	})
+	}
 }
 
 // WaitFinal is the single entry point for transitioning a busy worker to
@@ -168,7 +172,6 @@ func (h *WorkerHandle) finalizeFromLog() {
 				}
 				ws.MarkDone(ec)
 				h.resolveBranchInMemory()
-				h.save()
 			} else {
 				ec := 1
 				if result.ExitCode != nil {
@@ -179,11 +182,9 @@ func (h *WorkerHandle) finalizeFromLog() {
 					errMsg = *result.Error
 				}
 				ws.MarkFailed(ec, errMsg)
-				h.save()
 			}
 			return
 		}
 	}
 	ws.MarkFailed(1, "Process exited unexpectedly")
-	h.save()
 }

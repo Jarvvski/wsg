@@ -17,6 +17,25 @@ type DispatchGroup struct {
 	GHRepo    string                    `json:"gh_repo"`
 	SubIssues map[string]*SubIssueState `json:"sub_issues"`
 	Opts      DispatchGroupOpts         `json:"opts"`
+	revision  stateRevision
+	extra     map[string]json.RawMessage
+}
+
+type dispatchGroupWire DispatchGroup
+
+func (dg DispatchGroup) MarshalJSON() ([]byte, error) {
+	return marshalWithExtras(dispatchGroupWire(dg), dg.extra)
+}
+
+func (dg *DispatchGroup) UnmarshalJSON(data []byte) error {
+	var wire dispatchGroupWire
+	extra, err := unmarshalWithExtras(data, &wire, "parent", "created_at", "gh_repo", "sub_issues", "opts")
+	if err != nil {
+		return err
+	}
+	*dg = DispatchGroup(wire)
+	dg.extra = extra
+	return nil
 }
 
 type SubIssueState struct {
@@ -29,11 +48,47 @@ type SubIssueState struct {
 	CompletedAt  *string        `json:"completed_at"`
 	SkipReason   *string        `json:"skip_reason,omitempty"`
 	Retries      int            `json:"retries"`
+	extra        map[string]json.RawMessage
+}
+
+type subIssueStateWire SubIssueState
+
+func (state SubIssueState) MarshalJSON() ([]byte, error) {
+	return marshalWithExtras(subIssueStateWire(state), state.extra)
+}
+
+func (state *SubIssueState) UnmarshalJSON(data []byte) error {
+	var wire subIssueStateWire
+	extra, err := unmarshalWithExtras(data, &wire, "title", "status", "blocked_by", "worker", "branch", "dispatched_at", "completed_at", "skip_reason", "retries")
+	if err != nil {
+		return err
+	}
+	*state = SubIssueState(wire)
+	state.extra = extra
+	return nil
 }
 
 type DispatchGroupOpts struct {
 	Agent AgentKind `json:"agent,omitempty"`
 	Model string    `json:"model"`
+	extra map[string]json.RawMessage
+}
+
+type dispatchGroupOptsWire DispatchGroupOpts
+
+func (opts DispatchGroupOpts) MarshalJSON() ([]byte, error) {
+	return marshalWithExtras(dispatchGroupOptsWire(opts), opts.extra)
+}
+
+func (opts *DispatchGroupOpts) UnmarshalJSON(data []byte) error {
+	var wire dispatchGroupOptsWire
+	extra, err := unmarshalWithExtras(data, &wire, "agent", "model")
+	if err != nil {
+		return err
+	}
+	*opts = DispatchGroupOpts(wire)
+	opts.extra = extra
+	return nil
 }
 
 type DependencyContext struct {
@@ -49,28 +104,17 @@ func dispatchGroupFile(r *RepoContext, parent string) string {
 }
 
 func loadDispatchGroup(path string) (*DispatchGroup, error) {
-	data, err := os.ReadFile(path)
+	var group DispatchGroup
+	revision, err := loadJSONState(path, &group)
 	if err != nil {
 		return nil, err
 	}
-	var dg DispatchGroup
-	if err := json.Unmarshal(data, &dg); err != nil {
-		return nil, err
-	}
-	return &dg, nil
+	group.revision = revision
+	return &group, nil
 }
 
 func saveDispatchGroup(path string, dg *DispatchGroup) error {
-	data, err := json.MarshalIndent(dg, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeJSONAtomic(path, dg)
 }
 
 // LoadLiveDispatchGroup reads the group for parent off disk, reconciles its
@@ -84,12 +128,23 @@ func LoadLiveDispatchGroup(r *RepoContext, parent string) *DispatchGroup {
 	}
 	dg.SyncFromWorkers(newLiveDispatchWorld(r, nil, nil))
 	dg.RevalidateBranches(r)
-	saveDispatchGroup(path, dg)
+	if err := dg.Save(r); err != nil {
+		return nil
+	}
 	return dg
 }
 
 func (dg *DispatchGroup) Save(r *RepoContext) error {
-	return saveDispatchGroup(dispatchGroupFile(r, dg.Parent), dg)
+	path := dispatchGroupFile(r, dg.Parent)
+	poolLock := filepath.Join(r.poolDir(), ".dispatch.lock")
+	return withStateLock(poolLock, func() error {
+		revision, err := commitJSONState(path, path+".lock", dg.revision, dg)
+		if err != nil {
+			return err
+		}
+		dg.revision = revision
+		return nil
+	})
 }
 
 // ── DAG queries (pure) ─────────────────────────────────────────────
@@ -256,7 +311,7 @@ type DispatchWorld interface {
 	ReadWorker(name string) (*WorkerState, error)
 	ResetWorker(name string) error
 	ClaimWorker(ticket string) (string, error)
-	LaunchWorker(worker, ticket string, depCtx *DependencyContext)
+	LaunchWorker(worker, ticket string, depCtx *DependencyContext) error
 }
 
 // SyncFromWorkers folds each dispatched sub-issue's worker outcome back
@@ -327,7 +382,13 @@ func (dg *DispatchGroup) AdvanceOnce(world DispatchWorld) bool {
 			info("No idle workers for %s, will retry next cycle", tid)
 			continue
 		}
-		world.LaunchWorker(worker, tid, dg.DepContextFor(tid))
+		if err := world.LaunchWorker(worker, tid, dg.DepContextFor(tid)); err != nil {
+			info("  warning: launch %s failed: %v", tid, err)
+			if resetErr := world.ResetWorker(worker); resetErr != nil {
+				info("  warning: reset %s after launch failure failed: %v", worker, resetErr)
+			}
+			continue
+		}
 		dg.MarkDispatched(tid, worker)
 		changed = true
 	}
@@ -394,12 +455,11 @@ func (w *liveDispatchWorld) ClaimWorker(ticket string) (string, error) {
 	return w.pool.Claim(ticket)
 }
 
-func (w *liveDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) {
+func (w *liveDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) error {
 	ticketOpts := *w.opts
 	ticketOpts.TicketID = ticket
-	if _, err := launchWorker(w.r, worker, intentFromOpts(&ticketOpts, depCtx)); err != nil {
-		info("  warning: launch %s failed: %v", ticket, err)
-	}
+	_, err := launchWorker(w.r, worker, intentFromOpts(&ticketOpts, depCtx))
+	return err
 }
 
 // ── Rendering ──────────────────────────────────────────────────────
@@ -572,15 +632,55 @@ func cmdDispatchOrchestrated(r *RepoContext, dg *DispatchGroup, opts *DispatchOp
 		info("Pool ready: %d workers available", p.Snapshot().Idle)
 	}
 
-	dg.Save(r)
+	if err := dg.Save(r); err != nil {
+		fatal("Save dispatch group: %v", err)
+	}
 	watchDispatchGroup(r, p, dg, opts)
+}
+
+func advancePersistedOnce(r *RepoContext, dg *DispatchGroup, world DispatchWorld) (bool, error) {
+	changed := dg.SyncFromWorkers(world)
+	if changed {
+		if err := dg.Save(r); err != nil {
+			return false, err
+		}
+	}
+	for _, ticket := range dg.Ready() {
+		worker, err := world.ClaimWorker(ticket)
+		if err != nil {
+			info("No idle workers for %s, will retry next cycle", ticket)
+			continue
+		}
+		dg.MarkDispatched(ticket, worker)
+		if err := dg.Save(r); err != nil {
+			_ = world.ResetWorker(worker)
+			return changed, err
+		}
+		changed = true
+		if err := world.LaunchWorker(worker, ticket, dg.DepContextFor(ticket)); err != nil {
+			resetErr := world.ResetWorker(worker)
+			state := dg.SubIssues[ticket]
+			state.Status = SubIssueStatusPending
+			state.Worker = nil
+			state.DispatchedAt = nil
+			if saveErr := dg.Save(r); saveErr != nil {
+				return changed, fmt.Errorf("record launch failure for %s: %w", ticket, saveErr)
+			}
+			if resetErr != nil {
+				return changed, fmt.Errorf("reset %s after launch failure: %w", worker, resetErr)
+			}
+			info("  warning: launch %s failed: %v", ticket, err)
+		}
+	}
+	return changed, nil
 }
 
 func watchDispatchGroup(r *RepoContext, p *Pool, dg *DispatchGroup, opts *DispatchOpts) {
 	world := newLiveDispatchWorld(r, p, opts)
 	for {
-		if dg.AdvanceOnce(world) {
-			dg.Save(r)
+		if _, err := advancePersistedOnce(r, dg, world); err != nil {
+			info("Dispatch Group changed concurrently: %v", err)
+			return
 		}
 
 		if dg.Terminal() {
@@ -703,6 +803,5 @@ func releaseReservation(r *RepoContext, worker string) {
 	if err != nil {
 		return
 	}
-	h.state.Reset()
-	h.save()
+	_ = h.reset()
 }

@@ -2,7 +2,7 @@ PREFIX ?= $(HOME)/.local/bin
 BIN    := wsg
 
 build:
-	go build -o $(BIN) ./cmd/wsg
+	go build -buildvcs=false -o $(BIN) ./cmd/wsg
 
 install: build
 	install -m 755 $(BIN) $(PREFIX)/$(BIN)

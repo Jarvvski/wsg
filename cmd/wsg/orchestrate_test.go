@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -641,13 +642,15 @@ func TestSyncGroupFromWorkersStillBusy(t *testing.T) {
 // shelling out. Each operation records its arguments so a test can
 // assert which workers were reset / claimed / launched.
 type fakeDispatchWorld struct {
-	workers     map[string]*WorkerState
-	resetErr    map[string]error
-	resets      []string
-	claimQueue  []string
-	claimErr    map[string]error
-	claimCalls  []string
-	launchCalls []fakeLaunch
+	workers      map[string]*WorkerState
+	resetErr     map[string]error
+	resets       []string
+	claimQueue   []string
+	claimErr     map[string]error
+	claimCalls   []string
+	launchErr    map[string]error
+	beforeLaunch func()
+	launchCalls  []fakeLaunch
 }
 
 type fakeLaunch struct {
@@ -658,9 +661,10 @@ type fakeLaunch struct {
 
 func newFakeDispatchWorld() *fakeDispatchWorld {
 	return &fakeDispatchWorld{
-		workers:  map[string]*WorkerState{},
-		resetErr: map[string]error{},
-		claimErr: map[string]error{},
+		workers:   map[string]*WorkerState{},
+		resetErr:  map[string]error{},
+		claimErr:  map[string]error{},
+		launchErr: map[string]error{},
 	}
 }
 
@@ -695,8 +699,12 @@ func (f *fakeDispatchWorld) ClaimWorker(ticket string) (string, error) {
 	return picked, nil
 }
 
-func (f *fakeDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) {
+func (f *fakeDispatchWorld) LaunchWorker(worker, ticket string, depCtx *DependencyContext) error {
 	f.launchCalls = append(f.launchCalls, fakeLaunch{worker, ticket, depCtx})
+	if f.beforeLaunch != nil {
+		f.beforeLaunch()
+	}
+	return f.launchErr[ticket]
 }
 
 func TestAdvanceOnceSyncDoneResetsWorker(t *testing.T) {
@@ -894,6 +902,76 @@ func TestAdvanceOnceFullLifecycle(t *testing.T) {
 	}
 	if !dg.Terminal() {
 		t.Error("group should be terminal after sole sub-issue is done")
+	}
+}
+
+func TestPersistedAdvanceRecordsClaimBeforeLaunch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".jj", "pool"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	world := newFakeDispatchWorld()
+	world.claimQueue = []string{"worker-1"}
+
+	dg := &DispatchGroup{
+		Parent: "AMBA-9",
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusPending, BlockedBy: []string{}},
+		},
+	}
+	if err := dg.Save(r); err != nil {
+		t.Fatal(err)
+	}
+	world.beforeLaunch = func() {
+		persisted, err := loadDispatchGroup(dispatchGroupFile(r, "AMBA-9"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := persisted.SubIssues["AMBA-10"]
+		if state.Status != SubIssueStatusDispatched || state.Worker == nil || *state.Worker != "worker-1" {
+			t.Fatalf("persisted state before launch = %#v", state)
+		}
+	}
+
+	if _, err := advancePersistedOnce(r, dg, world); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPersistedAdvanceReleasesWorkerAfterLaunchFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".jj", "pool"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	r := &RepoContext{Root: dir, BaseDir: dir + "-workspaces"}
+	world := newFakeDispatchWorld()
+	world.claimQueue = []string{"worker-1"}
+	world.launchErr["AMBA-10"] = errors.New("launch failed")
+
+	dg := &DispatchGroup{
+		Parent: "AMBA-9",
+		SubIssues: map[string]*SubIssueState{
+			"AMBA-10": {Status: SubIssueStatusPending, BlockedBy: []string{}},
+		},
+	}
+	if err := dg.Save(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := advancePersistedOnce(r, dg, world); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := loadDispatchGroup(dispatchGroupFile(r, "AMBA-9"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := persisted.SubIssues["AMBA-10"]
+	if state.Status != SubIssueStatusPending || state.Worker != nil || state.DispatchedAt != nil {
+		t.Fatalf("persisted state after failed launch = %#v", state)
+	}
+	if len(world.resets) != 1 || world.resets[0] != "worker-1" {
+		t.Fatalf("resets = %v, want [worker-1]", world.resets)
 	}
 }
 

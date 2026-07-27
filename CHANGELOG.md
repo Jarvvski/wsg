@@ -4,6 +4,12 @@ User-visible changes to wsg. Each entry describes what a user (or agent) of the 
 
 Semver: PATCH for fixes, MINOR for everything else. MAJOR (1.0.0+) is locked off until the owner explicitly approves it - never auto-bump. The current wire version is in `cmd/wsg/version.go` and printed by `wsg version`. Sections are newest first.
 
+## 0.8.1 - 2026-07-27
+
+### Fixed
+
+- **Serialize state changes across concurrent wsg processes.** Pool, Worker, and Dispatch Group writes now coordinate through stable sidecar locks, reject stale updates, preserve unknown fields, and replace state through synced unique temporary files. Orchestration records claims before launching and releases failed launches, preventing concurrent commands from losing state or stranding Worker capacity.
+
 ## 0.8.0 - 2026-07-20
 
 ### Added

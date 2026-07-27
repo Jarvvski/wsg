@@ -2,11 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -27,6 +27,7 @@ type WorkerState struct {
 	Branch      string
 	ExitCode    *int
 	Error       *string
+	extra       map[string]json.RawMessage
 }
 
 // workerStateWire is the on-disk shape jj-wsx consumes. BranchName carries
@@ -57,13 +58,33 @@ func (ws *WorkerState) MarshalJSON() ([]byte, error) {
 		ExitCode:    ws.ExitCode,
 		Error:       ws.Error,
 	}
-	return json.Marshal(w)
+	known, err := json.Marshal(w)
+	if err != nil {
+		return nil, err
+	}
+	fields := make(map[string]json.RawMessage, len(ws.extra)+10)
+	if err := json.Unmarshal(known, &fields); err != nil {
+		return nil, err
+	}
+	for name, value := range ws.extra {
+		if _, exists := fields[name]; !exists {
+			fields[name] = value
+		}
+	}
+	return json.Marshal(fields)
 }
 
 func (ws *WorkerState) UnmarshalJSON(data []byte) error {
 	var w workerStateWire
 	if err := json.Unmarshal(data, &w); err != nil {
 		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, name := range []string{"status", "agent", "ticket", "pid", "started_at", "completed_at", "log_file", "branch_name", "exit_code", "error"} {
+		delete(fields, name)
 	}
 	ws.Status = w.Status
 	ws.Agent = w.Agent
@@ -74,6 +95,7 @@ func (ws *WorkerState) UnmarshalJSON(data []byte) error {
 	ws.LogFile = w.LogFile
 	ws.ExitCode = w.ExitCode
 	ws.Error = w.Error
+	ws.extra = fields
 	ws.Branch = ""
 	if w.BranchName != nil {
 		ws.Branch = *w.BranchName
@@ -132,7 +154,8 @@ func (ws *WorkerState) SetPID(pid int) {
 }
 
 func (ws *WorkerState) Reset() {
-	*ws = WorkerState{Status: WorkerStatusIdle}
+	extra := ws.extra
+	*ws = WorkerState{Status: WorkerStatusIdle, extra: extra}
 }
 
 func (ws *WorkerState) RuntimeAgent() AgentKind {
@@ -169,16 +192,16 @@ func loadWorkerState(path string) (*WorkerState, error) {
 }
 
 func saveWorkerState(path string, ws *WorkerState) error {
-	data, err := json.MarshalIndent(ws, "", "  ")
+	return writeJSONAtomic(path, ws)
+}
+
+func loadWorkerStateVersioned(path string) (*WorkerState, stateRevision, error) {
+	var state WorkerState
+	revision, err := loadJSONState(path, &state)
 	if err != nil {
-		return err
+		return nil, stateRevision{}, err
 	}
-	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return &state, revision, nil
 }
 
 // ── WorkerHandle ──────────────────────────────────────────────────
@@ -196,10 +219,11 @@ func saveWorkerState(path string, ws *WorkerState) error {
 // OpenWorker(path) loads a raw state by path for tests / low-level reads -
 // the lifecycle verbs are not available in that form.
 type WorkerHandle struct {
-	path   string
-	repo   *RepoContext
-	worker string
-	state  *WorkerState
+	path     string
+	repo     *RepoContext
+	worker   string
+	state    *WorkerState
+	revision stateRevision
 }
 
 // OpenWorker loads worker state from an explicit path. The returned handle
@@ -207,11 +231,11 @@ type WorkerHandle struct {
 // Reclaim) cannot be used. For the standard "open worker N from repo R"
 // path use LoadLiveWorker, which also reconciles dead-busy state.
 func OpenWorker(path string) (*WorkerHandle, error) {
-	ws, err := loadWorkerState(path)
+	ws, revision, err := loadWorkerStateVersioned(path)
 	if err != nil {
 		return nil, err
 	}
-	return &WorkerHandle{path: path, state: ws}, nil
+	return &WorkerHandle{path: path, state: ws, revision: revision}, nil
 }
 
 // CreateIdleWorker writes a fresh idle state for worker under repo r and
@@ -235,11 +259,11 @@ func CreateIdleWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
 // fresh log re-read would be wasted; otherwise prefer LoadLiveWorker.
 func loadWorker(r *RepoContext, worker string) (*WorkerHandle, error) {
 	path := r.workerStateFile(worker)
-	ws, err := loadWorkerState(path)
+	ws, revision, err := loadWorkerStateVersioned(path)
 	if err != nil {
 		return nil, err
 	}
-	return &WorkerHandle{path: path, repo: r, worker: worker, state: ws}, nil
+	return &WorkerHandle{path: path, repo: r, worker: worker, state: ws, revision: revision}, nil
 }
 
 // LoadLiveWorker opens a worker's state and reconciles it against the running
@@ -368,11 +392,32 @@ func (h *WorkerHandle) Resume(inv agentInvocation, fg bool) (int, error) {
 // exists. The workspace restore is fire-and-forget; callers should not
 // assume it has completed when Reclaim returns.
 func (h *WorkerHandle) Reclaim() error {
-	if h.state.PID != nil && processAlive(*h.state.PID) {
-		killProcess(*h.state.PID)
+	target := *h.state
+	if target.PID != nil && processAlive(*target.PID) {
+		killProcess(*target.PID)
 	}
-	if err := h.reset(); err != nil {
-		return err
+	for attempts := 0; ; attempts++ {
+		err := h.reset()
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errStateConflict) || attempts >= 2 || h.repo == nil || h.worker == "" {
+			return err
+		}
+		fresh, loadErr := loadWorker(h.repo, h.worker)
+		if loadErr != nil {
+			return loadErr
+		}
+		if fresh.state.Status == WorkerStatusIdle {
+			h.state = fresh.state
+			h.revision = fresh.revision
+			break
+		}
+		if !sameWorkerRun(&target, fresh.state) {
+			return err
+		}
+		h.state = fresh.state
+		h.revision = fresh.revision
 	}
 	if h.repo == nil || h.worker == "" {
 		return nil
@@ -388,31 +433,46 @@ func (h *WorkerHandle) Reclaim() error {
 // reset clears state to idle without process-kill or workspace restore.
 // The dismiss-terminal path uses this so a user can inspect / recover an
 // unpushed working copy after a failed run.
+func sameWorkerRun(left, right *WorkerState) bool {
+	return sameOptionalInt(left.PID, right.PID) &&
+		sameOptionalString(left.Ticket, right.Ticket) &&
+		sameOptionalString(left.StartedAt, right.StartedAt) &&
+		sameOptionalString(left.LogFile, right.LogFile)
+}
+
+func sameOptionalInt(left, right *int) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func sameOptionalString(left, right *string) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
 func (h *WorkerHandle) reset() error {
-	h.state.Reset()
-	return h.save()
+	return h.update(func(state *WorkerState) {
+		state.Reset()
+	})
 }
 
 func (h *WorkerHandle) save() error {
-	return saveWorkerState(h.path, h.state)
-}
-
-// withWorkerLock acquires an exclusive flock on a sibling ".lock" file and
-// runs fn while holding it. The lock is on a sidecar - not the worker JSON
-// itself - because saveWorkerState rewrites the JSON via temp+rename,
-// which invalidates any fd-bound flock on the original inode.
-func (h *WorkerHandle) withWorkerLock(fn func() error) error {
-	lockPath := h.path + ".lock"
-	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	revision, err := commitJSONState(h.path, h.path+".lock", h.revision, h.state)
 	if err != nil {
 		return err
 	}
-	defer lf.Close()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+	h.revision = revision
+	return nil
+}
+
+func (h *WorkerHandle) update(fn func(*WorkerState)) error {
+	previous := h.state
+	next := *previous
+	fn(&next)
+	h.state = &next
+	if err := h.save(); err != nil {
+		h.state = previous
 		return err
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-	return fn()
+	return nil
 }
 
 // Branch returns the worker's real branch, scanning jj bookmarks if only

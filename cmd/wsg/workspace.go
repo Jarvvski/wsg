@@ -121,14 +121,30 @@ func Provision(r *RepoContext, name, revision string, role ProvisionRole) (func(
 // `mise run :dev -- murder` - is the caller's responsibility and must
 // happen before this is called.
 func Teardown(r *RepoContext, name string) error {
+	statePath := r.workerStateFile(name)
+	lockPath := statePath + ".lock"
+	if _, stateErr := os.Stat(statePath); stateErr == nil || fileExistsForPersistence(lockPath) {
+		if err := withStateLock(lockPath, func() error {
+			if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Remove(filepath.Join(r.poolDir(), name+".log")); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Remove(filepath.Join(r.poolDir(), name+".log"))
+	}
+
 	wspath := r.workerDir(name)
 	jjForgetWorkspace(r.Root, name)
 	cacheRebuild(r)
 	if fi, err := os.Stat(wspath); err == nil && fi.IsDir() {
-		os.RemoveAll(wspath)
+		_ = os.RemoveAll(wspath)
 	}
-	os.Remove(r.workerStateFile(name))
-	os.Remove(filepath.Join(r.poolDir(), name+".log"))
 	return nil
 }
 
